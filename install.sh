@@ -4,15 +4,22 @@ set -e
 
 INSTALL_DIR="$(cd "$(dirname "$0")" && pwd)"
 SERVICE_USER="${SUDO_USER:-$(whoami)}"
-NODE_BIN="$(which node)"
+
+# Use nvm's node if available (required for native module compilation)
+NVM_NODE="/home/${SERVICE_USER}/.nvm/versions/node/v22.22.2/bin/node"
+NVM_NPM="/home/${SERVICE_USER}/.nvm/versions/node/v22.22.2/bin/npm"
+if [ ! -f "$NVM_NODE" ]; then
+  NVM_NODE="$(which node)"
+  NVM_NPM="$(which npm)"
+fi
 
 echo "Installing context-weaver from $INSTALL_DIR"
 echo "Running as user: $SERVICE_USER"
-echo "Node: $NODE_BIN"
+echo "Node: $NVM_NODE"
 
-# Install dependencies
+# Install dependencies using nvm's npm
 cd "$INSTALL_DIR"
-npm install
+"$NVM_NPM" install
 
 # Write systemd unit
 cat > /etc/systemd/system/context-weaver.service << UNIT
@@ -24,7 +31,7 @@ After=network.target llama-qwen-v2.service
 Type=simple
 User=$SERVICE_USER
 WorkingDirectory=$INSTALL_DIR
-ExecStart=$NODE_BIN $INSTALL_DIR/src/proxy.js
+ExecStart=$NVM_NODE $INSTALL_DIR/src/proxy.js
 Restart=on-failure
 RestartSec=5
 StandardOutput=journal
@@ -38,8 +45,10 @@ UNIT
 systemctl daemon-reload
 systemctl enable context-weaver.service
 systemctl restart context-weaver.service
+sleep 2
 systemctl status context-weaver.service --no-pager
 
 echo ""
-echo "Done. context-weaver is running on port $(node -e "console.log(require('$INSTALL_DIR/config.json').proxy.port)")"
-echo "Point OpenClaw's llamaserver baseUrl to: http://127.0.0.1:$(node -e "console.log(require('$INSTALL_DIR/config.json').proxy.port)")/v1"
+PORT=$("$NVM_NODE" -e "console.log(require('$INSTALL_DIR/config.json').proxy.port)")
+echo "Done. context-weaver is running on port $PORT"
+echo "Point OpenClaw's llamaserver baseUrl to: http://127.0.0.1:$PORT/v1"
