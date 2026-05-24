@@ -30,6 +30,7 @@ const fs = require('fs');
 
 const {
   expandHome,
+  extractContentText,
   getSessionKey,
   buildUpstreamHeaders,
   makeSseAccumulator,
@@ -201,11 +202,16 @@ function start(config = loadConfig()) {
         const streaming = parsed.stream === true;
 
         // 1. Persist user turn synchronously.
+        // Content may be a string OR an array of OpenAI content-parts
+        // (text + tool_result + image_url etc). Flatten before storage —
+        // better-sqlite3 only binds primitives, and the selector needs a
+        // string to embed.
         const userMsg = [...parsed.messages].reverse().find((m) => m.role === 'user');
-        if (userMsg?.content) {
-          const vec = await embedder.embed(userMsg.content).catch(() => null);
-          const est = Math.ceil(userMsg.content.length / config.context.charsPerToken);
-          history.insertTurn(sessionKey, 'user', userMsg.content, vec, est, embedder.model);
+        const userText = extractContentText(userMsg?.content);
+        if (userText) {
+          const vec = await embedder.embed(userText).catch(() => null);
+          const est = Math.ceil(userText.length / config.context.charsPerToken);
+          history.insertTurn(sessionKey, 'user', userText, vec, est, embedder.model);
         }
 
         // 2. Scene-guided context selection.

@@ -3,10 +3,51 @@ const assert = require('node:assert/strict');
 
 const {
   expandHome,
+  extractContentText,
   getSessionKey,
   buildUpstreamHeaders,
   makeSseAccumulator,
 } = require('../src/lib/proxy-helpers.js');
+
+// ─── extractContentText ─────────────────────────────────────────────────────
+
+test('extractContentText: passes strings through', () => {
+  assert.equal(extractContentText('hello'), 'hello');
+});
+
+test('extractContentText: joins OpenAI text parts', () => {
+  const parts = [
+    { type: 'text', text: 'first' },
+    { type: 'text', text: 'second' },
+  ];
+  assert.equal(extractContentText(parts), 'first\nsecond');
+});
+
+test('extractContentText: mixed parts keep only text', () => {
+  const parts = [
+    { type: 'text', text: 'hello' },
+    { type: 'tool_result', tool_use_id: 'x', content: 'ignored' },
+    { type: 'text', text: 'world' },
+  ];
+  assert.equal(extractContentText(parts), 'hello\nworld');
+});
+
+test('extractContentText: array with no text parts falls back to JSON', () => {
+  const parts = [{ type: 'image_url', image_url: { url: 'data:foo' } }];
+  const out = extractContentText(parts);
+  // Either JSON of the parts or empty — must be a string, never the array.
+  assert.equal(typeof out, 'string');
+  assert.ok(out.includes('image_url'));
+});
+
+test('extractContentText: object → JSON', () => {
+  assert.equal(extractContentText({ a: 1 }), '{"a":1}');
+});
+
+test('extractContentText: null/undefined → empty string', () => {
+  assert.equal(extractContentText(null), '');
+  assert.equal(extractContentText(undefined), '');
+});
 
 // ─── expandHome ─────────────────────────────────────────────────────────────
 

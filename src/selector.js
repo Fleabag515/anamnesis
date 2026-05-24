@@ -19,6 +19,7 @@
 
 const HistoryStore = require('./history.js');
 const Embedder = require('./embedder.js');
+const { extractContentText } = require('./lib/proxy-helpers.js');
 const log = require('./lib/logger.js').make('selector');
 
 // How many scenes to summarise in the injection block.
@@ -46,8 +47,10 @@ class Selector {
     const systemMsgs = incoming.filter((m) => m.role === 'system');
     const convoMsgs = incoming.filter((m) => m.role !== 'system');
     const currentMsg = convoMsgs[convoMsgs.length - 1];
-    const queryText = currentMsg?.content ?? '';
-    const queryVec = await this.embedder.embed(queryText);
+    // Normalise possibly-array content (OpenAI multipart) into plain text
+    // so the embedding sees the same string that gets stored as the turn.
+    const queryText = extractContentText(currentMsg?.content);
+    const queryVec = queryText ? await this.embedder.embed(queryText) : null;
     const currentModel = this.embedder.model;
 
     // Recency buffer — always included verbatim.

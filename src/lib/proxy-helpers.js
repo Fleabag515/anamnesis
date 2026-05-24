@@ -10,6 +10,34 @@ const crypto = require('crypto');
 const os = require('os');
 
 /**
+ * Safely flatten OpenAI-style chat-completion `content` into a plain string.
+ *
+ * OpenAI-compatible clients (including OpenClaw) may send a message's
+ * `content` as either a string OR an array of content parts:
+ *   [{ type: 'text', text: '...' }, { type: 'tool_result', ... }, ...]
+ *
+ * SQLite (via better-sqlite3) only binds strings/buffers/numbers/null, so
+ * we used to crash with a TypeError on every multipart request. Falls back
+ * to JSON.stringify() for non-text parts so nothing is silently dropped.
+ *
+ * Imported in the proxy (for storing the user turn) and the selector (so
+ * the query embedding sees the same text the user actually wrote).
+ */
+function extractContentText(content) {
+  if (typeof content === 'string') return content;
+  if (Array.isArray(content)) {
+    const text = content
+      .filter((p) => p?.type === 'text' || p?.text)
+      .map((p) => p?.text ?? p?.content ?? '')
+      .join('\n')
+      .trim();
+    return text || JSON.stringify(content);
+  }
+  if (content && typeof content === 'object') return JSON.stringify(content);
+  return String(content ?? '');
+}
+
+/**
  * Recursively expand `~`, `${HOME}` and `$HOME` in string values inside a
  * (possibly nested) config object. Lets config.json ship a portable default
  * like `~/.anamnesis/history.db` instead of a machine-specific absolute path.
@@ -122,4 +150,10 @@ function makeSseAccumulator() {
   };
 }
 
-module.exports = { expandHome, getSessionKey, buildUpstreamHeaders, makeSseAccumulator };
+module.exports = {
+  expandHome,
+  extractContentText,
+  getSessionKey,
+  buildUpstreamHeaders,
+  makeSseAccumulator,
+};
