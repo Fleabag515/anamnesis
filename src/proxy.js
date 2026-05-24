@@ -81,6 +81,8 @@ function forward(reqOpts, body) {
     delete headers['x-openclaw-session'];
     delete headers['x-session-id'];
     delete headers['host'];
+    // Remove all case variants of Content-Length before setting the correct one
+    Object.keys(headers).forEach(k => { if (k.toLowerCase() === 'content-length') delete headers[k]; });
     headers['Authorization']  = config.upstream.apiKey ? `Bearer ${config.upstream.apiKey}` : undefined;
     headers['Content-Length'] = Buffer.byteLength(body);
     // Remove undefined headers
@@ -89,7 +91,7 @@ function forward(reqOpts, body) {
     const opts = {
       hostname: upUrl.hostname,
       port:     upUrl.port || (isHttps ? 443 : 80),
-      path:     upUrl.pathname.replace(/\/$/, '') + reqOpts.path,
+      path:     upUrl.pathname.replace(/\/$/, '') + (reqOpts.url ?? reqOpts.path),
       method:   reqOpts.method,
       headers,
     };
@@ -150,8 +152,11 @@ const server = http.createServer((req, res) => {
         console.error('[anamnesis] selector error, using original:', err.message);
       }
 
-      // 3. Forward to upstream
-      const rewritten     = { ...parsed, messages: selectedMessages };
+      // 3. Forward to upstream — optionally disable thinking mode (Qwen3 etc.)
+      const rewritten = { ...parsed, messages: selectedMessages };
+      if (config.upstream.disableThinking) {
+        rewritten.chat_template_kwargs = { ...rewritten.chat_template_kwargs, enable_thinking: false };
+      }
       const rewrittenBody = Buffer.from(JSON.stringify(rewritten));
       let upRes;
       try {

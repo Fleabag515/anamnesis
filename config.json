@@ -33,7 +33,9 @@
         "baseUrl": "http://127.0.0.1:8080/v1",
         "apiKey": ""
       }
-    }
+    },
+    "disableThinking": true,
+    "_disableThinkingNote": "Injects chat_template_kwargs:{enable_thinking:false} \u2014 prevents Qwen3 thinking tokens from eating context/time"
   },
   "embedding": {
     "ollamaUrl": "http://127.0.0.1:11434",
