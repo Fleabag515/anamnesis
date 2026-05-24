@@ -79,11 +79,33 @@ class HistoryStore {
         target        TEXT    NOT NULL DEFAULT '',
         timeframe     TEXT    NOT NULL DEFAULT 'soon',
         confidence    REAL    NOT NULL DEFAULT 0.7,
-        fulfilled     INTEGER NOT NULL DEFAULT 0,
+                fulfilled     INTEGER NOT NULL DEFAULT 0,
         created_at    INTEGER NOT NULL DEFAULT (unixepoch())
       );
-    `);
 
+      CREATE TABLE IF NOT EXISTS character_profile (
+        id                  INTEGER PRIMARY KEY,
+        source_type         TEXT    NOT NULL,
+        source_path         TEXT,
+        source_mtime        INTEGER,
+        raw_content         TEXT    NOT NULL DEFAULT '',
+        parsed_summary      TEXT    NOT NULL DEFAULT '{}',
+        evolution_notes     TEXT    NOT NULL DEFAULT '',
+        drift_reminder      TEXT    NOT NULL DEFAULT '',
+        drift_checked_at    INTEGER NOT NULL DEFAULT 0,
+        updated_at          INTEGER NOT NULL DEFAULT (unixepoch())
+      );
+
+      CREATE TABLE IF NOT EXISTS character_observations (
+        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_key   TEXT    NOT NULL,
+        turn_id       INTEGER,
+        observed_at   INTEGER NOT NULL DEFAULT (unixepoch()),
+        obs_type      TEXT    NOT NULL,
+        detail        TEXT    NOT NULL,
+        consolidated  INTEGER NOT NULL DEFAULT 0
+      );
+    `);
     this._migrate();
 
     // Indices last, so all migrated columns are guaranteed to exist.
@@ -98,6 +120,8 @@ class HistoryStore {
       CREATE INDEX IF NOT EXISTS idx_scenes_session      ON memscenes(session_key, updated_at);
       CREATE INDEX IF NOT EXISTS idx_foresights_session  ON foresights(session_key, created_at);
       CREATE INDEX IF NOT EXISTS idx_foresights_active   ON foresights(session_key, fulfilled);
+      CREATE INDEX IF NOT EXISTS idx_char_obs_session   ON character_observations(session_key, observed_at);
+      CREATE INDEX IF NOT EXISTS idx_char_obs_pending   ON character_observations(consolidated, observed_at);
     `);
   }
 
@@ -442,6 +466,71 @@ class HistoryStore {
         .prepare('SELECT COUNT(*) as n FROM foresights WHERE session_key=? AND fulfilled=0')
         .get(sessionKey).n,
     };
+  }
+
+
+  // ─── Character Profile ────────────────────────────────────────────────────
+
+  getCharacterProfile() {
+    return this.db.prepare('SELECT * FROM character_profile ORDER BY id DESC LIMIT 1').get() || null;
+  }
+
+  upsertCharacterProfile({ sourceType, sourcePath, sourceMtime, rawContent, parsedSummary, evolutionNotes, driftReminder, driftCheckedAt }) {
+    const existing = this.getCharacterProfile();
+    const now = Math.floor(Date.now() / 1000);
+    if (existing) {
+      this.db.prepare(`
+        UPDATE character_profile
+        SET source_type=?, source_path=?, source_mtime=?, raw_content=?, parsed_summary=?,
+            evolution_notes=?, drift_reminder=?, drift_checked_at=?, updated_at=?
+        WHERE id=?
+      `).run(
+        sourceType, sourcePath ?? null, sourceMtime ?? null,
+        rawContent ?? existing.raw_content,
+        parsedSummary ?? existing.parsed_summary,
+        evolutionNotes ?? existing.evolution_notes,
+        driftReminder ?? existing.drift_reminder,
+        driftCheckedAt ?? existing.drift_checked_at,
+        now, existing.id
+      );
+    } else {
+      this.db.prepare(`
+        INSERT INTO character_profile
+          (source_type, source_path, source_mtime, raw_content, parsed_summary,
+           evolution_notes, drift_reminder, drift_checked_at, updated_at)
+        VALUES (?,?,?,?,?,?,?,?,?)
+      `).run(
+        sourceType, sourcePath ?? null, sourceMtime ?? null,
+        rawContent ?? '', parsedSummary ?? '{}',
+        evolutionNotes ?? '', driftReminder ?? '', driftCheckedAt ?? 0, now
+      );
+    }
+  }
+
+  insertCharacterObservation(sessionKey, turnId, obsType, detail) {
+    return this.db.prepare(`
+      INSERT INTO character_observations (session_key, turn_id, obs_type, detail)
+      VALUES (?, ?, ?, ?)
+    `).run(sessionKey, turnId ?? null, obsType, detail).lastInsertRowid;
+  }
+
+  getPendingObservations(limit = 50) {
+    return this.db.prepare(`
+      SELECT * FROM character_observations
+      WHERE consolidated=0 ORDER BY observed_at ASC LIMIT ?
+    `).all(limit);
+  }
+
+  countPendingObservations() {
+    return this.db.prepare(
+      "SELECT COUNT(*) as n FROM character_observations WHERE consolidated=0"
+    ).get().n;
+  }
+
+  markObservationsConsolidated(ids) {
+    if (!ids.length) return;
+    const ph = ids.map(() => '?').join(',');
+    this.db.prepare(`UPDATE character_observations SET consolidated=1 WHERE id IN (${ph})`).run(...ids);
   }
 
   close() {

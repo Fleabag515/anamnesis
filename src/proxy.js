@@ -42,16 +42,19 @@ const Embedder = require('./embedder.js');
 const Selector = require('./selector.js');
 const Extractor = require('./extractor.js');
 const ForesightExtractor = require('./foresight.js');
+const PersonaManager      = require('./persona.js');
 const Consolidator = require('./consolidator.js');
 
 function loadConfig() {
   return expandHome(JSON.parse(fs.readFileSync(path.join(__dirname, '../config.json'), 'utf8')));
 }
 
-function start(config = loadConfig()) {
+async function start(config = loadConfig()) {
   const history = new HistoryStore(config.history.dbPath);
   const embedder = new Embedder(config.embedding.ollamaUrl, config.embedding.model);
-  const selector = new Selector(config, history, embedder);
+  const persona  = new PersonaManager(config, history);
+  await persona.init();
+  const selector = new Selector(config, history, embedder, persona);
   const extractor = new Extractor(config, history, embedder);
   const foresightExtractor = new ForesightExtractor(config, history);
   const consolidator = new Consolidator(config, history, embedder);
@@ -162,6 +165,7 @@ function start(config = loadConfig()) {
         history.insertTurn(sessionKey, 'assistant', content, vec, est, embedder.model);
         extractor.processBatch().catch((e) => log.warn('extractor:', e.message));
         foresightExtractor.processBatch().catch((e) => log.warn('foresight:', e.message));
+        persona.observeResponse(sessionKey, null, content);
       } catch (e) {
         log.warn('recordAssistantTurn:', e.message);
       }

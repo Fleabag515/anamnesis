@@ -28,10 +28,11 @@ const INJECTION_SCENES = 3;
 const INJECTION_MIN_SIM = 0.45;
 
 class Selector {
-  constructor(config, historyStore, embedder) {
+  constructor(config, historyStore, embedder, persona = null) {
     this.cfg = config.context;
     this.history = historyStore;
     this.embedder = embedder;
+    this.persona   = persona;  // PersonaManager instance or null
   }
 
   async select(sessionKey, incoming) {
@@ -120,9 +121,22 @@ class Selector {
   _buildSystemWithMemory(systemMsgs, scenes, queryVec, currentModel, foresights = []) {
     const hasMemory = scenes.length > 0 && queryVec;
     const hasForesight = foresights.length > 0;
-    if (!hasMemory && !hasForesight) return systemMsgs;
+    const _charBlock = this.persona ? this.persona.getCharacterBlock() : '';
+    if (!hasMemory && !hasForesight) {
+      if (!_charBlock) return systemMsgs;
+      // Inject character block even when no memories or foresights are present
+      if (systemMsgs.length === 0) return [{ role: 'system', content: _charBlock.trim() }];
+      const _enriched = [...systemMsgs];
+      _enriched[_enriched.length - 1] = {
+        ..._enriched[_enriched.length - 1],
+        content: _enriched[_enriched.length - 1].content + _charBlock,
+      };
+      return _enriched;
+    }
 
-    let injection = '';
+    // Character block is always prepended (persona handles its own enabled check)
+    const characterBlock = this.persona ? this.persona.getCharacterBlock() : '';
+    let injection = characterBlock;
 
     if (hasMemory) {
       const relevant = scenes
