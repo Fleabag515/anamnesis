@@ -23,34 +23,37 @@
  *   - Close the SQLite handle
  */
 
-const http  = require('http');
+const http = require('http');
 const https = require('https');
-const path  = require('path');
-const fs    = require('fs');
+const path = require('path');
+const fs = require('fs');
 
 const {
-  expandHome, getSessionKey, buildUpstreamHeaders, makeSseAccumulator,
+  expandHome,
+  getSessionKey,
+  buildUpstreamHeaders,
+  makeSseAccumulator,
 } = require('./lib/proxy-helpers.js');
 const log = require('./lib/logger.js').make('anamnesis');
 
-const HistoryStore       = require('./history.js');
-const Embedder           = require('./embedder.js');
-const Selector           = require('./selector.js');
-const Extractor          = require('./extractor.js');
+const HistoryStore = require('./history.js');
+const Embedder = require('./embedder.js');
+const Selector = require('./selector.js');
+const Extractor = require('./extractor.js');
 const ForesightExtractor = require('./foresight.js');
-const Consolidator       = require('./consolidator.js');
+const Consolidator = require('./consolidator.js');
 
 function loadConfig() {
   return expandHome(JSON.parse(fs.readFileSync(path.join(__dirname, '../config.json'), 'utf8')));
 }
 
 function start(config = loadConfig()) {
-  const history            = new HistoryStore(config.history.dbPath);
-  const embedder           = new Embedder(config.embedding.ollamaUrl, config.embedding.model);
-  const selector           = new Selector(config, history, embedder);
-  const extractor          = new Extractor(config, history, embedder);
+  const history = new HistoryStore(config.history.dbPath);
+  const embedder = new Embedder(config.embedding.ollamaUrl, config.embedding.model);
+  const selector = new Selector(config, history, embedder);
+  const extractor = new Extractor(config, history, embedder);
   const foresightExtractor = new ForesightExtractor(config, history);
-  const consolidator       = new Consolidator(config, history, embedder);
+  const consolidator = new Consolidator(config, history, embedder);
 
   const pruned = history.prune(config.history.maxAgeDays);
   if (pruned > 0) log.info(`pruned ${pruned} old turns`);
@@ -67,7 +70,7 @@ function start(config = loadConfig()) {
     const upUrl = new URL(config.upstream.baseUrl);
     return {
       upUrl,
-      lib:  upUrl.protocol === 'https:' ? https : http,
+      lib: upUrl.protocol === 'https:' ? https : http,
       port: upUrl.port || (upUrl.protocol === 'https:' ? 443 : 80),
       path: upUrl.pathname.replace(/\/$/, '') + reqPath,
     };
@@ -91,10 +94,20 @@ function start(config = loadConfig()) {
 
           upRes.on('data', (chunk) => {
             clientRes.write(chunk);
-            try { onChunk(chunk); } catch (e) { log.warn('onChunk error:', e.message); }
+            try {
+              onChunk(chunk);
+            } catch (e) {
+              log.warn('onChunk error:', e.message);
+            }
           });
-          upRes.on('end',   () => { clientRes.end(); resolve(); });
-          upRes.on('error', (err) => { clientRes.end(); reject(err); });
+          upRes.on('end', () => {
+            clientRes.end();
+            resolve();
+          });
+          upRes.on('error', (err) => {
+            clientRes.end();
+            reject(err);
+          });
         }
       );
       upReq.on('error', (err) => {
@@ -121,7 +134,11 @@ function start(config = loadConfig()) {
           const chunks = [];
           upRes.on('data', (d) => chunks.push(d));
           upRes.on('end', () =>
-            resolve({ status: upRes.statusCode, headers: upRes.headers, body: Buffer.concat(chunks) })
+            resolve({
+              status: upRes.statusCode,
+              headers: upRes.headers,
+              body: Buffer.concat(chunks),
+            })
           );
           upRes.on('error', reject);
         }
@@ -173,12 +190,15 @@ function start(config = loadConfig()) {
 
       if (req.method === 'POST' && req.url.endsWith('/chat/completions')) {
         let parsed;
-        try { parsed = JSON.parse(rawBody.toString()); }
-        catch { return passthrough(req, res, rawBody); }
+        try {
+          parsed = JSON.parse(rawBody.toString());
+        } catch {
+          return passthrough(req, res, rawBody);
+        }
         if (!Array.isArray(parsed.messages)) return passthrough(req, res, rawBody);
 
         const sessionKey = getSessionKey(req.headers, config.upstream.apiKey);
-        const streaming  = parsed.stream === true;
+        const streaming = parsed.stream === true;
 
         // 1. Persist user turn synchronously.
         const userMsg = [...parsed.messages].reverse().find((m) => m.role === 'user');
@@ -205,13 +225,17 @@ function start(config = loadConfig()) {
           };
         }
         const rewrittenBody = Buffer.from(JSON.stringify(rewritten));
-        const headers = buildUpstreamHeaders(req.headers, { upstreamApiKey: config.upstream.apiKey });
+        const headers = buildUpstreamHeaders(req.headers, {
+          upstreamApiKey: config.upstream.apiKey,
+        });
         headers['Content-Length'] = Buffer.byteLength(rewrittenBody);
 
         if (streaming) {
           const sse = makeSseAccumulator();
           try {
-            await streamThrough(req.url, req.method, headers, rewrittenBody, res, (c) => sse.feed(c));
+            await streamThrough(req.url, req.method, headers, rewrittenBody, res, (c) =>
+              sse.feed(c)
+            );
           } catch (err) {
             log.error('streaming upstream error:', err.message);
             return;
@@ -221,8 +245,9 @@ function start(config = loadConfig()) {
         }
 
         let upRes;
-        try { upRes = await bufferedForward(req.url, req.method, headers, rewrittenBody); }
-        catch (err) {
+        try {
+          upRes = await bufferedForward(req.url, req.method, headers, rewrittenBody);
+        } catch (err) {
           log.error('upstream error:', err.message);
           res.writeHead(502, { 'Content-Type': 'application/json' });
           return res.end(JSON.stringify({ error: err.message }));
@@ -232,9 +257,11 @@ function start(config = loadConfig()) {
 
         try {
           const upParsed = JSON.parse(upRes.body.toString());
-          const content  = upParsed.choices?.[0]?.message?.content ?? '';
+          const content = upParsed.choices?.[0]?.message?.content ?? '';
           recordAssistantTurn(sessionKey, content);
-        } catch { /* non-JSON response; nothing to persist */ }
+        } catch {
+          /* non-JSON response; nothing to persist */
+        }
         return;
       }
 
@@ -272,13 +299,17 @@ function start(config = loadConfig()) {
     consolidator.stop();
     server.close();
     await Promise.all([extractor.flushInFlight(), foresightExtractor.flushInFlight()]);
-    try { history.close(); } catch { /* already closed */ }
+    try {
+      history.close();
+    } catch {
+      /* already closed */
+    }
     log.info('shutdown complete');
     process.exit(0);
   }
 
   process.on('SIGTERM', () => shutdown('SIGTERM'));
-  process.on('SIGINT',  () => shutdown('SIGINT'));
+  process.on('SIGINT', () => shutdown('SIGINT'));
 
   return { server, history, shutdown };
 }

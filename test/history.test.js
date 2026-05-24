@@ -1,8 +1,8 @@
-const test   = require('node:test');
+const test = require('node:test');
 const assert = require('node:assert/strict');
-const fs     = require('node:fs');
-const path   = require('node:path');
-const os     = require('node:os');
+const fs = require('node:fs');
+const path = require('node:path');
+const os = require('node:os');
 
 // History tests depend on better-sqlite3's native bindings. CI builds them as
 // part of `npm ci`; locally on a fresh checkout `npm install` does the same.
@@ -20,8 +20,7 @@ try {
   skipReason = `better-sqlite3 native binding unavailable: ${e.message.split('\n')[0]}`;
 }
 
-const maybeTest = (name, fn) =>
-  test(name, skipReason ? { skip: skipReason } : undefined, fn);
+const maybeTest = (name, fn) => test(name, skipReason ? { skip: skipReason } : undefined, fn);
 
 function tmpDb() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'anamnesis-test-'));
@@ -32,18 +31,25 @@ maybeTest('schema: init creates expected tables and columns', () => {
   const { dir, dbPath } = tmpDb();
   const h = new HistoryStore(dbPath);
   try {
-    const turnsCols = h.db.prepare('PRAGMA table_info(turns)').all().map((c) => c.name);
-    assert.ok(turnsCols.includes('foresight_scanned'),
-      'turns.foresight_scanned must exist');
-    assert.ok(turnsCols.includes('embedding_model'),
-      'turns.embedding_model must exist');
+    const turnsCols = h.db
+      .prepare('PRAGMA table_info(turns)')
+      .all()
+      .map((c) => c.name);
+    assert.ok(turnsCols.includes('foresight_scanned'), 'turns.foresight_scanned must exist');
+    assert.ok(turnsCols.includes('embedding_model'), 'turns.embedding_model must exist');
 
-    const cellsCols = h.db.prepare('PRAGMA table_info(memcells)').all().map((c) => c.name);
+    const cellsCols = h.db
+      .prepare('PRAGMA table_info(memcells)')
+      .all()
+      .map((c) => c.name);
     assert.ok(cellsCols.includes('importance'));
     assert.ok(cellsCols.includes('category'));
     assert.ok(cellsCols.includes('embedding_model'));
 
-    const sceneCols = h.db.prepare('PRAGMA table_info(memscenes)').all().map((c) => c.name);
+    const sceneCols = h.db
+      .prepare('PRAGMA table_info(memscenes)')
+      .all()
+      .map((c) => c.name);
     assert.ok(sceneCols.includes('avg_importance'));
     assert.ok(sceneCols.includes('embedding_model'));
   } finally {
@@ -76,24 +82,27 @@ maybeTest('foresight_scanned is independent of extracted', () => {
   }
 });
 
-maybeTest('getUnscannedAssistantTurns returns only assistant turns with foresight_scanned=0', () => {
-  const { dir, dbPath } = tmpDb();
-  const h = new HistoryStore(dbPath);
-  try {
-    const u = h.insertTurn('s1', 'user',      'aa'.repeat(50), null, 10, 'm');
-    const a = h.insertTurn('s1', 'assistant', 'bb'.repeat(50), null, 10, 'm');
-    const b = h.insertTurn('s1', 'assistant', 'cc'.repeat(50), null, 10, 'm');
-    h.markForesightScanned(b);
+maybeTest(
+  'getUnscannedAssistantTurns returns only assistant turns with foresight_scanned=0',
+  () => {
+    const { dir, dbPath } = tmpDb();
+    const h = new HistoryStore(dbPath);
+    try {
+      const u = h.insertTurn('s1', 'user', 'aa'.repeat(50), null, 10, 'm');
+      const a = h.insertTurn('s1', 'assistant', 'bb'.repeat(50), null, 10, 'm');
+      const b = h.insertTurn('s1', 'assistant', 'cc'.repeat(50), null, 10, 'm');
+      h.markForesightScanned(b);
 
-    const out = h.getUnscannedAssistantTurns(10).map((r) => r.id);
-    assert.deepEqual(out, [a]);
-    assert.ok(!out.includes(u));
-    assert.ok(!out.includes(b));
-  } finally {
-    h.close();
-    fs.rmSync(dir, { recursive: true, force: true });
+      const out = h.getUnscannedAssistantTurns(10).map((r) => r.id);
+      assert.deepEqual(out, [a]);
+      assert.ok(!out.includes(u));
+      assert.ok(!out.includes(b));
+    } finally {
+      h.close();
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   }
-});
+);
 
 maybeTest('toFloat32 round-trips embeddings', () => {
   const { dir, dbPath } = tmpDb();
@@ -136,14 +145,15 @@ maybeTest('decay: high-importance cell decays slower than low-importance', () =>
   const h = new HistoryStore(dbPath);
   try {
     const t = h.insertTurn('s', 'assistant', 'x'.repeat(100), null, 10, 'm');
-    const cLo = h.insertMemcell('s', t, 'low',  null, 0.1, 'other', 'm');
+    const cLo = h.insertMemcell('s', t, 'low', null, 0.1, 'other', 'm');
     const cHi = h.insertMemcell('s', t, 'high', null, 1.0, 'other', 'm');
     // Backdate both 60 days so decay can take effect.
     const old = Math.floor(Date.now() / 1000) - 60 * 86400;
     h.db.prepare('UPDATE memcells SET created_at=? WHERE id IN (?,?)').run(old, cLo, cHi);
 
     h.updateDecayScores('s');
-    const rows = h.db.prepare('SELECT id, decay_score FROM memcells WHERE id IN (?,?)')
+    const rows = h.db
+      .prepare('SELECT id, decay_score FROM memcells WHERE id IN (?,?)')
       .all(cLo, cHi);
     const lo = rows.find((r) => r.id === cLo).decay_score;
     const hi = rows.find((r) => r.id === cHi).decay_score;
@@ -159,16 +169,19 @@ maybeTest('prune respects category exemption', () => {
   const h = new HistoryStore(dbPath);
   try {
     const t = h.insertTurn('s', 'assistant', 'x'.repeat(100), null, 10, 'm');
-    const cOther = h.insertMemcell('s', t, 'misc',   null, 0.1, 'other',     'm');
-    const cDec   = h.insertMemcell('s', t, 'choice', null, 0.1, 'decision',  'm');
-    const cPref  = h.insertMemcell('s', t, 'pref',   null, 0.1, 'preference','m');
+    const cOther = h.insertMemcell('s', t, 'misc', null, 0.1, 'other', 'm');
+    const cDec = h.insertMemcell('s', t, 'choice', null, 0.1, 'decision', 'm');
+    const cPref = h.insertMemcell('s', t, 'pref', null, 0.1, 'preference', 'm');
 
     // Set decay_score below threshold for all three.
     h.db.prepare('UPDATE memcells SET decay_score=0.01').run();
     const pruned = h.pruneDecayedMemcells('s', 0.05);
     assert.equal(pruned, 1, 'only the "other" cell should be pruned');
 
-    const remaining = h.getAllMemcells('s').map((c) => c.id).sort();
+    const remaining = h
+      .getAllMemcells('s')
+      .map((c) => c.id)
+      .sort();
     assert.deepEqual(remaining, [cDec, cPref].sort());
     assert.ok(!remaining.includes(cOther));
   } finally {
@@ -181,7 +194,7 @@ maybeTest('stats returns counts per session', () => {
   const { dir, dbPath } = tmpDb();
   const h = new HistoryStore(dbPath);
   try {
-    h.insertTurn('s1', 'user',      'aaaaaaaa', null, 10, 'm');
+    h.insertTurn('s1', 'user', 'aaaaaaaa', null, 10, 'm');
     h.insertTurn('s1', 'assistant', 'a'.repeat(100), null, 10, 'm');
     h.insertTurn('s2', 'assistant', 'b'.repeat(100), null, 10, 'm');
     const s1 = h.stats('s1');

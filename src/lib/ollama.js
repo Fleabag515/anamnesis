@@ -11,20 +11,20 @@
  *   generate(url, { model, prompt, options, timeoutMs }) — same but /api/generate
  */
 
-const http  = require('http');
+const http = require('http');
 const https = require('https');
 
 function post(baseUrl, path, body, { timeoutMs = 30000 } = {}) {
   return new Promise((resolve, reject) => {
-    const u   = new URL(baseUrl);
+    const u = new URL(baseUrl);
     const lib = u.protocol === 'https:' ? https : http;
     const opts = {
       hostname: u.hostname,
-      port:     u.port || (u.protocol === 'https:' ? 443 : 80),
+      port: u.port || (u.protocol === 'https:' ? 443 : 80),
       path,
-      method:   'POST',
-      headers:  {
-        'Content-Type':   'application/json',
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
         'Content-Length': Buffer.byteLength(body),
       },
     };
@@ -45,14 +45,14 @@ function post(baseUrl, path, body, { timeoutMs = 30000 } = {}) {
 
 async function chat(baseUrl, { model, messages, options = {}, timeoutMs = 45000, think = false }) {
   const body = JSON.stringify({ model, messages, stream: false, think, options });
-  const raw  = await post(baseUrl, '/api/chat', body, { timeoutMs });
+  const raw = await post(baseUrl, '/api/chat', body, { timeoutMs });
   const parsed = JSON.parse(raw);
   return (parsed?.message?.content ?? '').trim();
 }
 
 async function generate(baseUrl, { model, prompt, options = {}, timeoutMs = 90000 }) {
   const body = JSON.stringify({ model, prompt, stream: false, options });
-  const raw  = await post(baseUrl, '/api/generate', body, { timeoutMs });
+  const raw = await post(baseUrl, '/api/generate', body, { timeoutMs });
   const parsed = JSON.parse(raw);
   return (parsed?.response ?? '').trim();
 }

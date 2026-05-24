@@ -18,8 +18,8 @@
  */
 
 const { chat, tryParseJsonArray } = require('./lib/ollama.js');
-const { shouldProcessTurn }       = require('./lib/heuristics.js');
-const log                         = require('./lib/logger.js').make('extractor');
+const { shouldProcessTurn } = require('./lib/heuristics.js');
+const log = require('./lib/logger.js').make('extractor');
 
 const CATEGORIES = ['technical', 'decision', 'preference', 'personal', 'context', 'other'];
 
@@ -49,11 +49,11 @@ Turn to extract from:
 
 class Extractor {
   constructor(config, historyStore, embedder) {
-    this.cfg       = config.extraction;
+    this.cfg = config.extraction;
     this.ollamaUrl = config.embedding.ollamaUrl;
-    this.history   = historyStore;
-    this.embedder  = embedder;
-    this._running  = false;
+    this.history = historyStore;
+    this.embedder = embedder;
+    this._running = false;
     this._inflight = null;
   }
 
@@ -67,9 +67,9 @@ class Extractor {
 
   processBatch() {
     if (this._running) return this._inflight ?? Promise.resolve();
-    this._running  = true;
+    this._running = true;
     this._inflight = this._runBatch().finally(() => {
-      this._running  = false;
+      this._running = false;
       this._inflight = null;
     });
     return this._inflight;
@@ -114,15 +114,19 @@ class Extractor {
       const fact = typeof item === 'string' ? item : item?.fact;
       if (!fact || fact.trim().length < 10) continue;
 
-      const importance = typeof item?.importance === 'number'
-        ? Math.min(1, Math.max(0, item.importance))
-        : 0.5;
+      const importance =
+        typeof item?.importance === 'number' ? Math.min(1, Math.max(0, item.importance)) : 0.5;
       const category = CATEGORIES.includes(item?.category) ? item.category : 'other';
 
       const embedding = await this.embedder.embed(fact.trim()).catch(() => null);
       this.history.insertMemcell(
-        turn.session_key, turn.id, fact.trim(),
-        embedding, importance, category, this.embedder.model
+        turn.session_key,
+        turn.id,
+        fact.trim(),
+        embedding,
+        importance,
+        category,
+        this.embedder.model
       );
       count++;
     }
@@ -135,9 +139,9 @@ class Extractor {
   async _callLLM(content) {
     const truncated = content.length > 2500 ? content.slice(0, 2500) + '...' : content;
     const text = await chat(this.ollamaUrl, {
-      model:     this.cfg.model,
-      messages:  [{ role: 'user', content: EXTRACT_PROMPT + truncated }],
-      options:   { temperature: 0.1, num_predict: 500 },
+      model: this.cfg.model,
+      messages: [{ role: 'user', content: EXTRACT_PROMPT + truncated }],
+      options: { temperature: 0.1, num_predict: 500 },
       timeoutMs: this.cfg.timeoutMs,
     });
     return tryParseJsonArray(text);

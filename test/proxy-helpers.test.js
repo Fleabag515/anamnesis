@@ -1,8 +1,11 @@
-const test   = require('node:test');
+const test = require('node:test');
 const assert = require('node:assert/strict');
 
 const {
-  expandHome, getSessionKey, buildUpstreamHeaders, makeSseAccumulator,
+  expandHome,
+  getSessionKey,
+  buildUpstreamHeaders,
+  makeSseAccumulator,
 } = require('../src/lib/proxy-helpers.js');
 
 // ─── expandHome ─────────────────────────────────────────────────────────────
@@ -72,15 +75,18 @@ test('getSessionKey: same token => same key (deterministic)', () => {
 // ─── buildUpstreamHeaders ───────────────────────────────────────────────────
 
 test('buildUpstreamHeaders: strips proxy-internal + hop-by-hop headers', () => {
-  const out = buildUpstreamHeaders({
-    'host':                'localhost:8084',
-    'x-openclaw-session':  's',
-    'x-session-id':        's2',
-    'content-length':      '999',
-    'connection':          'keep-alive',
-    'transfer-encoding':   'chunked',
-    'x-other':             'keep',
-  }, { upstreamApiKey: 'K' });
+  const out = buildUpstreamHeaders(
+    {
+      host: 'localhost:8084',
+      'x-openclaw-session': 's',
+      'x-session-id': 's2',
+      'content-length': '999',
+      connection: 'keep-alive',
+      'transfer-encoding': 'chunked',
+      'x-other': 'keep',
+    },
+    { upstreamApiKey: 'K' }
+  );
   assert.equal(out['host'], undefined);
   assert.equal(out['x-openclaw-session'], undefined);
   assert.equal(out['x-session-id'], undefined);

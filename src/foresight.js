@@ -19,8 +19,8 @@
  */
 
 const { chat, tryParseJsonArray } = require('./lib/ollama.js');
-const { shouldProcessTurn }       = require('./lib/heuristics.js');
-const log                         = require('./lib/logger.js').make('foresight');
+const { shouldProcessTurn } = require('./lib/heuristics.js');
+const log = require('./lib/logger.js').make('foresight');
 
 const VALID_TIMEFRAMES = ['soon', 'days', 'weeks', 'months', 'ongoing'];
 
@@ -52,10 +52,10 @@ Turn to scan:
 
 class ForesightExtractor {
   constructor(config, historyStore) {
-    this.cfg       = config.foresight;
+    this.cfg = config.foresight;
     this.ollamaUrl = config.embedding.ollamaUrl;
-    this.history   = historyStore;
-    this._running  = false;
+    this.history = historyStore;
+    this._running = false;
     this._inflight = null;
   }
 
@@ -69,9 +69,9 @@ class ForesightExtractor {
 
   processBatch() {
     if (this._running) return this._inflight ?? Promise.resolve();
-    this._running  = true;
+    this._running = true;
     this._inflight = this._runBatch().finally(() => {
-      this._running  = false;
+      this._running = false;
       this._inflight = null;
     });
     return this._inflight;
@@ -116,15 +116,19 @@ class ForesightExtractor {
       const intention = (item?.intention ?? '').trim();
       if (!intention || intention.length < 8) continue;
 
-      const target    = (item?.target ?? '').trim();
+      const target = (item?.target ?? '').trim();
       const timeframe = VALID_TIMEFRAMES.includes(item?.timeframe) ? item.timeframe : 'soon';
-      const confidence = typeof item?.confidence === 'number'
-        ? Math.min(1, Math.max(0, item.confidence))
-        : 0.7;
+      const confidence =
+        typeof item?.confidence === 'number' ? Math.min(1, Math.max(0, item.confidence)) : 0.7;
       if (confidence < 0.4) continue;
 
       this.history.insertForesight(
-        turn.session_key, turn.id, intention, target, timeframe, confidence
+        turn.session_key,
+        turn.id,
+        intention,
+        target,
+        timeframe,
+        confidence
       );
       count++;
     }
@@ -137,9 +141,9 @@ class ForesightExtractor {
   async _callLLM(content) {
     const truncated = content.length > 2500 ? content.slice(0, 2500) + '...' : content;
     const text = await chat(this.ollamaUrl, {
-      model:     this.cfg.model,
-      messages:  [{ role: 'user', content: FORESIGHT_PROMPT + truncated }],
-      options:   { temperature: 0.1, num_predict: 400 },
+      model: this.cfg.model,
+      messages: [{ role: 'user', content: FORESIGHT_PROMPT + truncated }],
+      options: { temperature: 0.1, num_predict: 400 },
       timeoutMs: this.cfg.timeoutMs,
     });
     return tryParseJsonArray(text) ?? [];

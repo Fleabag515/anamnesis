@@ -7,7 +7,7 @@
  */
 
 const crypto = require('crypto');
-const os     = require('os');
+const os = require('os');
 
 /**
  * Recursively expand `~`, `${HOME}` and `$HOME` in string values inside a
@@ -108,15 +108,17 @@ function makeSseAccumulator() {
           try {
             const j = JSON.parse(payload);
             const delta =
-              j?.choices?.[0]?.delta?.content ??
-              j?.choices?.[0]?.message?.content ??
-              '';
+              j?.choices?.[0]?.delta?.content ?? j?.choices?.[0]?.message?.content ?? '';
             if (delta) content += delta;
-          } catch { /* ignore keepalives / partials */ }
+          } catch {
+            /* ignore keepalives / partials */
+          }
         }
       }
     },
-    get content() { return content; },
+    get content() {
+      return content;
+    },
   };
 }
 

@@ -1,4 +1,4 @@
-const test   = require('node:test');
+const test = require('node:test');
 const assert = require('node:assert/strict');
 
 const Embedder = require('../src/embedder.js');
@@ -41,6 +41,6 @@ test('cosine: zero vector vs any => 0 (no NaN)', () => {
 test('cosine: monotonic w.r.t. similarity', () => {
   const q = new Float32Array([1, 0, 0]);
   const close = new Float32Array([0.9, 0.1, 0]);
-  const far   = new Float32Array([0, 1, 0]);
+  const far = new Float32Array([0, 1, 0]);
   assert.ok(Embedder.cosine(q, close) > Embedder.cosine(q, far));
 });

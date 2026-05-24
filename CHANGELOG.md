@@ -7,6 +7,7 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 ## [0.3.0] — Unreleased
 
 ### Fixed
+
 - **Streaming**: SSE responses are now piped through to the client unbuffered.
   Previously every chunk was concatenated before the response head was sent,
   defeating `stream=true` entirely. Streamed assistant turns are now
@@ -17,7 +18,7 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 - **Consolidator** uses a self-rescheduling `setTimeout` chain with a
   `_running` guard instead of `setInterval`. Slow Ollama calls can no longer
   cause overlapping consolidation runs on the same session.
-- **Auth header**: an empty `upstream.apiKey` now means *passthrough* — the
+- **Auth header**: an empty `upstream.apiKey` now means _passthrough_ — the
   client's own `Authorization` header reaches upstream. Previously it was
   silently stripped.
 - **Hardcoded paths**: `config.json` ships `~/.anamnesis/history.db` and the
@@ -26,6 +27,7 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   `v22.22.2`.
 
 ### Added
+
 - `embedding_model` column on `turns`, `memcells`, and `memscenes`. Selector
   and consolidator skip vectors produced by a different model so similarity
   scores can't be silently meaningless after a model swap.
@@ -42,6 +44,7 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   but the licence file itself was missing.
 
 ### Changed
+
 - `install.sh` writes a unit named `anamnesis.service` (was
   `context-weaver.service`, a leftover from an earlier project).
 - Session keys are now `auth:<sha256(token).slice(0,16)>` instead of the

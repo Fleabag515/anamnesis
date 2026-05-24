@@ -8,12 +8,12 @@
  */
 
 const { post } = require('./lib/ollama.js');
-const log      = require('./lib/logger.js').make('embedder');
+const log = require('./lib/logger.js').make('embedder');
 
 class Embedder {
   constructor(ollamaUrl, model) {
     this.ollamaUrl = ollamaUrl;
-    this.model     = model;
+    this.model = model;
   }
 
   /**
@@ -25,9 +25,9 @@ class Embedder {
     if (!text) return null;
     const body = JSON.stringify({ model: this.model, input: text });
     try {
-      const raw  = await post(this.ollamaUrl, '/api/embed', body, { timeoutMs: 30000 });
+      const raw = await post(this.ollamaUrl, '/api/embed', body, { timeoutMs: 30000 });
       const data = JSON.parse(raw);
-      const vec  = data.embeddings?.[0] ?? data.embedding;
+      const vec = data.embeddings?.[0] ?? data.embedding;
       if (!vec) return null;
       return new Float32Array(vec);
     } catch (err) {
@@ -43,11 +43,13 @@ class Embedder {
    */
   static cosine(a, b) {
     if (!a || !b || a.length !== b.length) return 0;
-    let dot = 0, na = 0, nb = 0;
+    let dot = 0,
+      na = 0,
+      nb = 0;
     for (let i = 0; i < a.length; i++) {
       dot += a[i] * b[i];
-      na  += a[i] * a[i];
-      nb  += b[i] * b[i];
+      na += a[i] * a[i];
+      nb += b[i] * b[i];
     }
     const denom = Math.sqrt(na) * Math.sqrt(nb);
     return denom === 0 ? 0 : dot / denom;

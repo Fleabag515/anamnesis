@@ -18,48 +18,56 @@
  */
 
 const HistoryStore = require('./history.js');
-const Embedder     = require('./embedder.js');
-const log          = require('./lib/logger.js').make('selector');
+const Embedder = require('./embedder.js');
+const log = require('./lib/logger.js').make('selector');
 
 // How many scenes to summarise in the injection block.
-const INJECTION_SCENES  = 3;
+const INJECTION_SCENES = 3;
 // Minimum scene similarity to include in injection.
 const INJECTION_MIN_SIM = 0.45;
 
 class Selector {
   constructor(config, historyStore, embedder) {
-    this.cfg      = config.context;
-    this.history  = historyStore;
+    this.cfg = config.context;
+    this.history = historyStore;
     this.embedder = embedder;
   }
 
   async select(sessionKey, incoming) {
     const {
-      tokenBudget, systemReserveTokens, recencyTurns, rotatingSlots,
-      charsPerToken, minChunkChars,
+      tokenBudget,
+      systemReserveTokens,
+      recencyTurns,
+      rotatingSlots,
+      charsPerToken,
+      minChunkChars,
     } = this.cfg;
 
     const systemMsgs = incoming.filter((m) => m.role === 'system');
-    const convoMsgs  = incoming.filter((m) => m.role !== 'system');
+    const convoMsgs = incoming.filter((m) => m.role !== 'system');
     const currentMsg = convoMsgs[convoMsgs.length - 1];
-    const queryText  = currentMsg?.content ?? '';
-    const queryVec   = await this.embedder.embed(queryText);
+    const queryText = currentMsg?.content ?? '';
+    const queryVec = await this.embedder.embed(queryText);
     const currentModel = this.embedder.model;
 
     // Recency buffer — always included verbatim.
     const recencyWindow = recencyTurns * 2;
-    const recencyMsgs   = convoMsgs.slice(Math.max(0, convoMsgs.length - recencyWindow));
+    const recencyMsgs = convoMsgs.slice(Math.max(0, convoMsgs.length - recencyWindow));
 
     const scenes = this.history.getScenes(sessionKey);
 
     // ─── Stage 1: build memory + foresight injection block ──────────────────
-    const foresights     = this.history.getActiveForesights(sessionKey, 3);
+    const foresights = this.history.getActiveForesights(sessionKey, 3);
     const enrichedSystem = this._buildSystemWithMemory(
-      systemMsgs, scenes, queryVec, currentModel, foresights
+      systemMsgs,
+      scenes,
+      queryVec,
+      currentModel,
+      foresights
     );
 
     // ─── Budget accounting ─────────────────────────────────────────────────
-    const systemTokens  = this._est(enrichedSystem, charsPerToken);
+    const systemTokens = this._est(enrichedSystem, charsPerToken);
     const recencyTokens = this._est(recencyMsgs, charsPerToken);
     const budget = tokenBudget - systemReserveTokens - systemTokens - recencyTokens;
 
@@ -67,13 +75,25 @@ class Selector {
     let rotatingMsgs = [];
     if (scenes.length > 0 && queryVec) {
       rotatingMsgs = this._sceneGuidedRetrieval(
-        sessionKey, queryVec, currentModel, scenes,
-        rotatingSlots, budget, charsPerToken, minChunkChars
+        sessionKey,
+        queryVec,
+        currentModel,
+        scenes,
+        rotatingSlots,
+        budget,
+        charsPerToken,
+        minChunkChars
       );
     } else {
       rotatingMsgs = this._rawTurnRetrieval(
-        sessionKey, queryVec, currentModel, recencyMsgs.length,
-        rotatingSlots, budget, charsPerToken, minChunkChars
+        sessionKey,
+        queryVec,
+        currentModel,
+        recencyMsgs.length,
+        rotatingSlots,
+        budget,
+        charsPerToken,
+        minChunkChars
       );
     }
 
@@ -83,9 +103,9 @@ class Selector {
     const stats = this.history.stats(sessionKey);
     log.debug(
       `session=${sessionKey.slice(0, 8)} ` +
-      `turns=${stats.turns} cells=${stats.cells} scenes=${stats.scenes} foresights=${stats.foresights} ` +
-      `injected=${enrichedSystem.length > systemMsgs.length ? 'yes' : 'no'} ` +
-      `rotating=${rotatingMsgs.length} recency=${recencyMsgs.length}`
+        `turns=${stats.turns} cells=${stats.cells} scenes=${stats.scenes} foresights=${stats.foresights} ` +
+        `injected=${enrichedSystem.length > systemMsgs.length ? 'yes' : 'no'} ` +
+        `rotating=${rotatingMsgs.length} recency=${recencyMsgs.length}`
     );
 
     return final;
@@ -95,7 +115,7 @@ class Selector {
    * Append <memory> and <foresight> blocks to the last system message.
    */
   _buildSystemWithMemory(systemMsgs, scenes, queryVec, currentModel, foresights = []) {
-    const hasMemory    = scenes.length > 0 && queryVec;
+    const hasMemory = scenes.length > 0 && queryVec;
     const hasForesight = foresights.length > 0;
     if (!hasMemory && !hasForesight) return systemMsgs;
 
@@ -108,7 +128,7 @@ class Selector {
             return { ...s, sim: 0 };
           }
           const sVec = HistoryStore.toFloat32(s.embedding);
-          const sim  = sVec ? Embedder.cosine(queryVec, sVec) : 0;
+          const sim = sVec ? Embedder.cosine(queryVec, sVec) : 0;
           return { ...s, sim };
         })
         .filter((s) => s.sim >= INJECTION_MIN_SIM)
@@ -122,10 +142,12 @@ class Selector {
     }
 
     if (hasForesight) {
-      const fLines = foresights.map((f) => {
-        const tag = f.target ? ` (${f.target})` : '';
-        return `• [${f.timeframe}]${tag} ${f.intention}`;
-      }).join('\n');
+      const fLines = foresights
+        .map((f) => {
+          const tag = f.target ? ` (${f.target})` : '';
+          return `• [${f.timeframe}]${tag} ${f.intention}`;
+        })
+        .join('\n');
       injection += `\n\n<foresight>\nPending intentions from recent context:\n${fLines}\n</foresight>`;
     }
 
@@ -142,14 +164,23 @@ class Selector {
     return enriched;
   }
 
-  _sceneGuidedRetrieval(sessionKey, queryVec, currentModel, scenes, maxSlots, budget, cpt, minChars) {
+  _sceneGuidedRetrieval(
+    sessionKey,
+    queryVec,
+    currentModel,
+    scenes,
+    maxSlots,
+    budget,
+    cpt,
+    minChars
+  ) {
     const scored = scenes
       .map((s) => {
         if (s.embedding_model && s.embedding_model !== currentModel) {
           return { ...s, weightedSim: 0 };
         }
         const sVec = HistoryStore.toFloat32(s.embedding);
-        const sim  = sVec ? Embedder.cosine(queryVec, sVec) : 0;
+        const sim = sVec ? Embedder.cosine(queryVec, sVec) : 0;
         return { ...s, weightedSim: sim * (0.7 + s.avg_importance * 0.3) };
       })
       .sort((a, b) => b.weightedSim - a.weightedSim)
@@ -159,7 +190,11 @@ class Selector {
     for (const scene of scored) {
       this.history.bumpSceneRecall(scene.id);
       let ids;
-      try { ids = JSON.parse(scene.memcell_ids); } catch { continue; }
+      try {
+        ids = JSON.parse(scene.memcell_ids);
+      } catch {
+        continue;
+      }
       if (!ids.length) continue;
 
       for (const id of this.history.getTurnIdsForMemcells(ids)) turnIdSet.add(id);
@@ -167,8 +202,8 @@ class Selector {
     }
 
     const candidateTurns = this.history.getTurnsByIds([...turnIdSet]);
-    const allTurns       = this.history.getSessionTurns(sessionKey);
-    const turnMap        = new Map(allTurns.map((t) => [t.id, t]));
+    const allTurns = this.history.getSessionTurns(sessionKey);
+    const turnMap = new Map(allTurns.map((t) => [t.id, t]));
 
     const ranked = candidateTurns
       .map((t) => {
@@ -177,8 +212,8 @@ class Selector {
           return { ...t, score: (full?.importance ?? 0.5) * 0.3 };
         }
         const tVec = full?.embedding ? HistoryStore.toFloat32(full.embedding) : null;
-        const sim  = tVec ? Embedder.cosine(queryVec, tVec) : 0.3;
-        const imp  = full?.importance ?? 0.5;
+        const sim = tVec ? Embedder.cosine(queryVec, tVec) : 0.3;
+        const imp = full?.importance ?? 0.5;
         return { ...t, score: sim * 0.7 + imp * 0.3 };
       })
       .sort((a, b) => b.score - a.score);
@@ -186,8 +221,17 @@ class Selector {
     return this._fillBudget(ranked, maxSlots, budget, cpt, minChars);
   }
 
-  _rawTurnRetrieval(sessionKey, queryVec, currentModel, recencyCount, maxSlots, budget, cpt, minChars) {
-    const allTurns   = this.history.getSessionTurns(sessionKey);
+  _rawTurnRetrieval(
+    sessionKey,
+    queryVec,
+    currentModel,
+    recencyCount,
+    maxSlots,
+    budget,
+    cpt,
+    minChars
+  ) {
+    const allTurns = this.history.getSessionTurns(sessionKey);
     const candidates = allTurns.slice(0, Math.max(0, allTurns.length - recencyCount));
 
     const scored = candidates
@@ -197,7 +241,7 @@ class Selector {
           return { ...t, score: 0 };
         }
         const tVec = HistoryStore.toFloat32(t.embedding);
-        const sim  = tVec && queryVec ? Embedder.cosine(queryVec, tVec) : 0;
+        const sim = tVec && queryVec ? Embedder.cosine(queryVec, tVec) : 0;
         return { ...t, score: sim };
       })
       .sort((a, b) => b.score - a.score);
@@ -215,8 +259,8 @@ class Selector {
    */
   _fillBudget(ranked, maxSlots, budget, cpt, _minChars) {
     const selected = [];
-    const seenIds  = new Set();
-    let remaining  = budget;
+    const seenIds = new Set();
+    let remaining = budget;
     for (const t of ranked) {
       if (selected.length >= maxSlots) break;
       if (seenIds.has(t.id)) continue;

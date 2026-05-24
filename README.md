@@ -1,6 +1,6 @@
 # Anamnesis
 
-*From Greek ἀνάμνησις — the deep recollection of what the mind already knows.*
+_From Greek ἀνάμνησις — the deep recollection of what the mind already knows._
 
 A self-organizing memory proxy for LLM agents. Inspired by EverMemOS-style
 hierarchical memory (turn → memcell → memscene) with explicit foresight
@@ -53,14 +53,14 @@ Final context window:
 
 ## What makes this different from a sliding window
 
-|                       | Sliding window         | Anamnesis                              |
-|-----------------------|------------------------|----------------------------------------|
-| Old turns             | Dropped permanently    | Stored forever, retrieved when relevant |
-| Retrieval             | Recency only           | Scene-guided cosine similarity         |
-| Memory structure      | Flat                   | Hierarchical (turn → cell → scene)     |
-| Forgetting            | Hard cutoff            | Soft decay by age + recall frequency   |
-| Background processing | None                   | MemCell + Foresight extraction         |
-| Streaming             | Native                 | Native SSE pass-through                |
+|                       | Sliding window      | Anamnesis                               |
+| --------------------- | ------------------- | --------------------------------------- |
+| Old turns             | Dropped permanently | Stored forever, retrieved when relevant |
+| Retrieval             | Recency only        | Scene-guided cosine similarity          |
+| Memory structure      | Flat                | Hierarchical (turn → cell → scene)      |
+| Forgetting            | Hard cutoff         | Soft decay by age + recall frequency    |
+| Background processing | None                | MemCell + Foresight extraction          |
+| Streaming             | Native              | Native SSE pass-through                 |
 
 ## Install
 
@@ -82,29 +82,29 @@ npm run dev
 
 ## Config (`config.json`)
 
-| Key                                | Default                       | Description                                  |
-|------------------------------------|-------------------------------|----------------------------------------------|
-| `proxy.port` / `proxy.host`        | `8084` / `127.0.0.1`          | Where Anamnesis listens                      |
-| `upstream.baseUrl`                 | `http://127.0.0.1:8083`       | Any OpenAI-compatible endpoint               |
-| `upstream.apiKey`                  | `localqwen`                   | Bearer token sent upstream. Empty = passthrough of client's own `Authorization` |
-| `upstream.disableThinking`         | `true`                        | Inject `chat_template_kwargs:{enable_thinking:false}` for Qwen3-style models |
-| `embedding.ollamaUrl` / `.model`   | `:11434` / `nomic-embed-cpu:latest` | Ollama embedding endpoint              |
-| `extraction.model`                 | `qwen3:0.6b`                  | Small LLM for memcell extraction             |
-| `foresight.model`                  | `qwen3:0.6b`                  | Small LLM for intention extraction           |
-| `context.tokenBudget`              | `65536`                       | Total token budget given to upstream         |
-| `context.recencyTurns`             | `8`                           | Turn pairs always in context, verbatim       |
-| `context.rotatingSlots`            | `6`                           | Old turns added via scene retrieval          |
-| `memory.consolidationIntervalMs`   | `120000`                      | How often scenes are rebuilt                 |
-| `memory.sceneClusterThreshold`     | `0.72`                        | Cosine sim threshold for clustering          |
-| `memory.decayPruneThreshold`       | `0.05`                        | Score below which non-critical cells are pruned |
-| `history.dbPath`                   | `~/.anamnesis/history.db`     | SQLite path; supports `~`, `$HOME`, `${HOME}` |
-| `history.maxAgeDays`               | `90`                          | Raw turn retention                            |
+| Key                              | Default                             | Description                                                                     |
+| -------------------------------- | ----------------------------------- | ------------------------------------------------------------------------------- |
+| `proxy.port` / `proxy.host`      | `8084` / `127.0.0.1`                | Where Anamnesis listens                                                         |
+| `upstream.baseUrl`               | `http://127.0.0.1:8083`             | Any OpenAI-compatible endpoint                                                  |
+| `upstream.apiKey`                | `localqwen`                         | Bearer token sent upstream. Empty = passthrough of client's own `Authorization` |
+| `upstream.disableThinking`       | `true`                              | Inject `chat_template_kwargs:{enable_thinking:false}` for Qwen3-style models    |
+| `embedding.ollamaUrl` / `.model` | `:11434` / `nomic-embed-cpu:latest` | Ollama embedding endpoint                                                       |
+| `extraction.model`               | `qwen3:0.6b`                        | Small LLM for memcell extraction                                                |
+| `foresight.model`                | `qwen3:0.6b`                        | Small LLM for intention extraction                                              |
+| `context.tokenBudget`            | `65536`                             | Total token budget given to upstream                                            |
+| `context.recencyTurns`           | `8`                                 | Turn pairs always in context, verbatim                                          |
+| `context.rotatingSlots`          | `6`                                 | Old turns added via scene retrieval                                             |
+| `memory.consolidationIntervalMs` | `120000`                            | How often scenes are rebuilt                                                    |
+| `memory.sceneClusterThreshold`   | `0.72`                              | Cosine sim threshold for clustering                                             |
+| `memory.decayPruneThreshold`     | `0.05`                              | Score below which non-critical cells are pruned                                 |
+| `history.dbPath`                 | `~/.anamnesis/history.db`           | SQLite path; supports `~`, `$HOME`, `${HOME}`                                   |
+| `history.maxAgeDays`             | `90`                                | Raw turn retention                                                              |
 
 ### Environment
 
-| Var              | Values                       | Notes                                |
-|------------------|------------------------------|--------------------------------------|
-| `ANAMNESIS_LOG`  | `error` / `warn` / `info` / `debug` | Default `info`. `debug` enables per-request selector tracing. |
+| Var             | Values                              | Notes                                                         |
+| --------------- | ----------------------------------- | ------------------------------------------------------------- |
+| `ANAMNESIS_LOG` | `error` / `warn` / `info` / `debug` | Default `info`. `debug` enables per-request selector tracing. |
 
 ## Status endpoint
 

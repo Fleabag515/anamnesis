@@ -18,10 +18,18 @@ const ACTIVE = LEVELS[(process.env.ANAMNESIS_LOG ?? 'info').toLowerCase()] ?? LE
 function make(tag) {
   const prefix = `[${tag}]`;
   return {
-    error: (...args) => { if (ACTIVE >= LEVELS.error) console.error(prefix, ...args); },
-    warn:  (...args) => { if (ACTIVE >= LEVELS.warn)  console.warn(prefix,  ...args); },
-    info:  (...args) => { if (ACTIVE >= LEVELS.info)  console.log(prefix,   ...args); },
-    debug: (...args) => { if (ACTIVE >= LEVELS.debug) console.log(prefix,   ...args); },
+    error: (...args) => {
+      if (ACTIVE >= LEVELS.error) console.error(prefix, ...args);
+    },
+    warn: (...args) => {
+      if (ACTIVE >= LEVELS.warn) console.warn(prefix, ...args);
+    },
+    info: (...args) => {
+      if (ACTIVE >= LEVELS.info) console.log(prefix, ...args);
+    },
+    debug: (...args) => {
+      if (ACTIVE >= LEVELS.debug) console.log(prefix, ...args);
+    },
   };
 }
 
