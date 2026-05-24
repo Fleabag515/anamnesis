@@ -1,18 +1,5 @@
 /**
  * history.js — SQLite-backed memory store for Anamnesis
- *
- * Three-tier storage:
- *   turns      — raw conversation turns (episodic trace)
- *   memcells   — atomic facts with importance + category (semantic atoms)
- *   memscenes  — thematic clusters of memcells (consolidated scenes)
- *
- * Decay scoring:
- *   score = recency_factor (exp decay, 30-day half-life)
- *           + recall_boost (log-scaled)
- *           * importance_multiplier
- *
- * High-importance facts (decisions, preferences) decay much slower than
- * ephemeral context facts.
  */
 
 const Database = require('better-sqlite3');
@@ -31,6 +18,7 @@ class HistoryStore {
   }
 
   _init() {
+    // 1. Create tables
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS turns (
         id            INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -51,8 +39,6 @@ class HistoryStore {
         session_key   TEXT    NOT NULL,
         content       TEXT    NOT NULL,
         embedding     BLOB,
-        importance    REAL    NOT NULL DEFAULT 0.5,
-        category      TEXT    NOT NULL DEFAULT 'other',
         recall_count  INTEGER NOT NULL DEFAULT 0,
         decay_score   REAL    NOT NULL DEFAULT 1.0,
         scene_id      INTEGER,
@@ -66,12 +52,17 @@ class HistoryStore {
         summary       TEXT    NOT NULL,
         embedding     BLOB,
         memcell_ids   TEXT    NOT NULL DEFAULT '[]',
-        avg_importance REAL   NOT NULL DEFAULT 0.5,
         recall_count  INTEGER NOT NULL DEFAULT 0,
         created_at    INTEGER NOT NULL DEFAULT (unixepoch()),
         updated_at    INTEGER NOT NULL DEFAULT (unixepoch())
       );
+    `);
 
+    // 2. Migrate — add new columns to existing tables if absent
+    this._migrate();
+
+    // 3. Create indices (after migration so all columns exist)
+    this.db.exec(`
       CREATE INDEX IF NOT EXISTS idx_turns_session    ON turns(session_key, created_at);
       CREATE INDEX IF NOT EXISTS idx_turns_extracted  ON turns(extracted);
       CREATE INDEX IF NOT EXISTS idx_memcells_session ON memcells(session_key, created_at);
@@ -79,8 +70,6 @@ class HistoryStore {
       CREATE INDEX IF NOT EXISTS idx_memcells_cat     ON memcells(category);
       CREATE INDEX IF NOT EXISTS idx_scenes_session   ON memscenes(session_key, updated_at);
     `);
-    // Migrate older DBs that lack the new columns
-    this._migrate();
   }
 
   _migrate() {
@@ -89,6 +78,7 @@ class HistoryStore {
       this.db.exec("ALTER TABLE memcells ADD COLUMN importance REAL NOT NULL DEFAULT 0.5");
     if (!cols.includes('category'))
       this.db.exec("ALTER TABLE memcells ADD COLUMN category TEXT NOT NULL DEFAULT 'other'");
+
     const sceneCols = this.db.prepare("PRAGMA table_info(memscenes)").all().map(c => c.name);
     if (!sceneCols.includes('avg_importance'))
       this.db.exec("ALTER TABLE memscenes ADD COLUMN avg_importance REAL NOT NULL DEFAULT 0.5");
@@ -107,20 +97,20 @@ class HistoryStore {
   getSessionTurns(sessionKey) {
     return this.db.prepare(`
       SELECT id, role, content, embedding, token_est, recall_count, importance, created_at
-      FROM turns WHERE session_key = ? ORDER BY created_at ASC, id ASC
+      FROM turns WHERE session_key=? ORDER BY created_at ASC, id ASC
     `).all(sessionKey);
   }
 
   getUnextractedTurns(limit = 20) {
     return this.db.prepare(`
       SELECT id, session_key, role, content FROM turns
-      WHERE extracted = 0 AND role = 'assistant'
+      WHERE extracted=0 AND role='assistant'
       ORDER BY created_at ASC LIMIT ?
     `).all(limit);
   }
 
-  markExtracted(id)        { this.db.prepare('UPDATE turns SET extracted=1 WHERE id=?').run(id); }
-  bumpTurnRecall(id)       { this.db.prepare('UPDATE turns SET recall_count=recall_count+1 WHERE id=?').run(id); }
+  markExtracted(id)  { this.db.prepare('UPDATE turns SET extracted=1 WHERE id=?').run(id); }
+  bumpTurnRecall(id) { this.db.prepare('UPDATE turns SET recall_count=recall_count+1 WHERE id=?').run(id); }
 
   // ─── MemCells ─────────────────────────────────────────────────────────────
 
@@ -136,7 +126,7 @@ class HistoryStore {
   getUnclusteredMemcells(sessionKey, limit = 100) {
     return this.db.prepare(`
       SELECT id, content, embedding, importance FROM memcells
-      WHERE session_key = ? AND scene_id IS NULL
+      WHERE session_key=? AND scene_id IS NULL
       ORDER BY created_at ASC LIMIT ?
     `).all(sessionKey, limit);
   }
@@ -144,12 +134,12 @@ class HistoryStore {
   getAllMemcells(sessionKey) {
     return this.db.prepare(`
       SELECT id, content, embedding, importance, category, scene_id, decay_score, created_at
-      FROM memcells WHERE session_key = ? ORDER BY created_at ASC
+      FROM memcells WHERE session_key=? ORDER BY created_at ASC
     `).all(sessionKey);
   }
 
-  assignMemcellToScene(memcellId, sceneId) {
-    this.db.prepare('UPDATE memcells SET scene_id=? WHERE id=?').run(sceneId, memcellId);
+  assignMemcellToScene(id, sceneId) {
+    this.db.prepare('UPDATE memcells SET scene_id=? WHERE id=?').run(sceneId, id);
   }
 
   updateDecayScores(sessionKey) {
@@ -157,13 +147,11 @@ class HistoryStore {
     const cells = this.db.prepare(
       'SELECT id, created_at, recall_count, importance FROM memcells WHERE session_key=?'
     ).all(sessionKey);
-
     const update = this.db.prepare('UPDATE memcells SET decay_score=? WHERE id=?');
     this.db.transaction(() => {
       for (const c of cells) {
         const ageDays  = (now - c.created_at) / 86400;
-        // High-importance facts have a longer half-life (up to 90 days vs 30 days)
-        const halfLife = 30 + c.importance * 60;
+        const halfLife = 30 + (c.importance ?? 0.5) * 60; // 30-90 day half-life by importance
         const recency  = Math.exp(-ageDays / halfLife);
         const recall   = Math.log1p(c.recall_count) / 5;
         update.run(Math.min(1.0, recency + recall), c.id);
@@ -172,10 +160,9 @@ class HistoryStore {
   }
 
   pruneDecayedMemcells(sessionKey, threshold = 0.05) {
-    // Never prune decisions or preferences regardless of score
     return this.db.prepare(`
       DELETE FROM memcells
-      WHERE session_key=? AND decay_score < ? AND recall_count=0
+      WHERE session_key=? AND decay_score<? AND recall_count=0
         AND category NOT IN ('decision','preference')
     `).run(sessionKey, threshold).changes;
   }
@@ -193,7 +180,8 @@ class HistoryStore {
   updateScene(sceneId, title, summary, embedding, memcellIds, avgImportance) {
     const blob = embedding ? Buffer.from(embedding.buffer) : null;
     this.db.prepare(`
-      UPDATE memscenes SET title=?, summary=?, embedding=?, memcell_ids=?, avg_importance=?, updated_at=unixepoch()
+      UPDATE memscenes
+      SET title=?, summary=?, embedding=?, memcell_ids=?, avg_importance=?, updated_at=unixepoch()
       WHERE id=?
     `).run(title, summary, blob, JSON.stringify(memcellIds), avgImportance, sceneId);
   }
@@ -212,8 +200,6 @@ class HistoryStore {
     const ph = ids.map(() => '?').join(',');
     return this.db.prepare(`SELECT id, role, content, token_est FROM turns WHERE id IN (${ph})`).all(...ids);
   }
-
-  // ─── Utilities ────────────────────────────────────────────────────────────
 
   static toFloat32(blob) {
     if (!blob) return null;
