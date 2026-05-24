@@ -1,16 +1,13 @@
 /**
- * selector.js — Context rotation engine
+ * selector.js — Scene-guided context selection (EverMemOS-inspired)
  *
- * Given the full conversation history and the current incoming messages,
- * assembles the optimal context window:
- *
- *   [ system messages ]
- *   [ ...rotating old turns, scored by relevance to current query ]
- *   [ ...last N turns verbatim (recency buffer) ]
- *
- * Older turns that don't make the relevance cut are silently dropped
- * for this turn — but remain in the history DB and may appear in future
- * turns when they become relevant again.
+ * Retrieval hierarchy:
+ *   1. Embed current query
+ *   2. Score all MemScenes by cosine similarity → pick top K scenes
+ *   3. Expand scenes → get their constituent turn IDs
+ *   4. Fill rotating slots with turns from top scenes (decay-weighted)
+ *   5. Fall back to raw turn similarity if no scenes exist yet
+ *   6. Always append recency buffer (last N turns verbatim)
  */
 
 const HistoryStore = require('./history.js');
@@ -18,125 +15,147 @@ const Embedder     = require('./embedder.js');
 
 class Selector {
   constructor(config, historyStore, embedder) {
-    this.cfg     = config.context;
-    this.history = historyStore;
+    this.cfg      = config.context;
+    this.history  = historyStore;
     this.embedder = embedder;
   }
 
-  /**
-   * Build the final messages array to send upstream.
-   *
-   * @param {string}   sessionKey  - unique key for this conversation
-   * @param {object[]} incoming    - the messages[] from the client request
-   * @returns {object[]}           - rewritten messages[] for the LLM
-   */
   async select(sessionKey, incoming) {
     const {
-      tokenBudget,
-      systemReserveTokens,
-      recencyTurns,
-      rotatingSlots,
-      charsPerToken,
-      minChunkChars,
+      tokenBudget, systemReserveTokens,
+      recencyTurns, rotatingSlots, charsPerToken, minChunkChars
     } = this.cfg;
 
-    // --- 1. Separate system messages from conversation turns ---
+    // Split system from conversation
     const systemMsgs = incoming.filter(m => m.role === 'system');
     const convoMsgs  = incoming.filter(m => m.role !== 'system');
-
-    // --- 2. The last message is the current user query ---
     const currentMsg = convoMsgs[convoMsgs.length - 1];
     const queryText  = currentMsg?.content ?? '';
 
-    // --- 3. Embed the current query for relevance scoring ---
+    // Embed query
     const queryVec = await this.embedder.embed(queryText);
 
-    // --- 4. Load full history from DB (excludes current incoming turns) ---
-    const stored = this.history.getSessionTurns(sessionKey);
+    // Recency buffer (always included)
+    const recencyWindow = recencyTurns * 2;
+    const recencyMsgs   = convoMsgs.slice(Math.max(0, convoMsgs.length - recencyWindow));
 
-    // --- 5. Recency buffer: last N turns from incoming convo (always kept) ---
-    const recencyMsgs = convoMsgs.slice(Math.max(0, convoMsgs.length - recencyTurns * 2));
-    const recencyIds  = new Set(recencyMsgs.map((_, i) => `incoming-${convoMsgs.length - recencyMsgs.length + i}`));
+    // Budget accounting
+    const systemTokens  = this._est(systemMsgs, charsPerToken);
+    const recencyTokens = this._est(recencyMsgs, charsPerToken);
+    let budget = tokenBudget - systemReserveTokens - systemTokens - recencyTokens;
 
-    // --- 6. Candidate pool: stored turns not in the recency window ---
-    //    We pair user+assistant turns as chunks for coherence.
-    const chunks = this._pairTurns(stored);
-    const recencyCount = Math.ceil(recencyMsgs.length / 2);
-    const candidates = chunks.slice(0, Math.max(0, chunks.length - recencyCount));
+    // Try scene-guided retrieval first
+    const scenes = this.history.getScenes(sessionKey);
+    let rotatingMsgs = [];
 
-    // --- 7. Score candidates by cosine similarity to current query ---
-    const scored = candidates
-      .filter(c => c.text.length >= minChunkChars)
-      .map(c => {
-        const storedVec = c.embedding ? HistoryStore.toFloat32(c.embedding) : null;
-        const sim = storedVec && queryVec ? Embedder.cosine(queryVec, storedVec) : 0;
-        return { ...c, sim };
-      })
-      .sort((a, b) => b.sim - a.sim);
-
-    // --- 8. Fill rotating slots within token budget ---
-    const systemTokens  = this._estimateTokens(systemMsgs, charsPerToken);
-    const recencyTokens = this._estimateTokens(recencyMsgs, charsPerToken);
-    let remaining = tokenBudget - systemReserveTokens - systemTokens - recencyTokens;
-
-    const selected = [];
-    for (const chunk of scored.slice(0, rotatingSlots * 3)) {  // oversample, then cap
-      if (selected.length >= rotatingSlots) break;
-      const cost = Math.ceil(chunk.text.length / charsPerToken);
-      if (cost <= remaining) {
-        selected.push(chunk);
-        remaining -= cost;
-      }
+    if (scenes.length > 0 && queryVec) {
+      rotatingMsgs = await this._sceneGuidedRetrieval(
+        sessionKey, queryVec, scenes, rotatingSlots, budget, charsPerToken, minChunkChars
+      );
+    } else {
+      // Fall back: raw turn similarity
+      rotatingMsgs = await this._rawTurnRetrieval(
+        sessionKey, queryVec, recencyMsgs.length, rotatingSlots, budget, charsPerToken, minChunkChars
+      );
     }
 
-    // --- 9. Sort selected chunks chronologically so context reads naturally ---
-    selected.sort((a, b) => a.createdAt - b.createdAt);
+    const final = [...systemMsgs, ...rotatingMsgs, ...recencyMsgs];
 
-    // --- 10. Assemble final messages ---
-    const rotatingMsgs = selected.flatMap(c => c.messages);
-
-    const final = [
-      ...systemMsgs,
-      ...rotatingMsgs,
-      ...recencyMsgs,
-    ];
-
+    const stats = this.history.stats(sessionKey);
     console.log(
       `[selector] session=${sessionKey.slice(0,8)} ` +
-      `history=${stored.length} candidates=${candidates.length} ` +
-      `selected=${selected.length} recency=${recencyMsgs.length} ` +
-      `total=${final.length} budget_remaining=${remaining}`
+      `turns=${stats.turns} cells=${stats.cells} scenes=${stats.scenes} ` +
+      `rotating=${rotatingMsgs.length} recency=${recencyMsgs.length} ` +
+      `total_msgs=${final.length}`
     );
 
     return final;
   }
 
-  /**
-   * Pair consecutive user+assistant turns into coherent chunks.
-   */
-  _pairTurns(turns) {
-    const chunks = [];
-    for (let i = 0; i < turns.length; i++) {
-      const t = turns[i];
-      // Use the assistant turn's embedding (it summarises the exchange)
-      if (t.role === 'assistant') {
-        const prev = turns[i - 1];
-        const messages = prev && prev.role === 'user'
-          ? [{ role: 'user', content: prev.content }, { role: 'assistant', content: t.content }]
-          : [{ role: 'assistant', content: t.content }];
-        chunks.push({
-          messages,
-          text:      messages.map(m => m.content).join(' '),
-          embedding: t.embedding,
-          createdAt: t.created_at,
-        });
-      }
+  async _sceneGuidedRetrieval(sessionKey, queryVec, scenes, maxSlots, budget, cpt, minChars) {
+    // Score scenes
+    const scored = scenes
+      .map(s => {
+        const sVec = HistoryStore.toFloat32(s.embedding);
+        const sim  = sVec ? Embedder.cosine(queryVec, sVec) : 0;
+        return { ...s, sim };
+      })
+      .sort((a, b) => b.sim - a.sim)
+      .slice(0, maxSlots * 2); // oversample
+
+    // Collect turn IDs from top scenes
+    const turnIdSet = new Set();
+    for (const scene of scored) {
+      this.history.bumpSceneRecall(scene.id);
+      let ids;
+      try { ids = JSON.parse(scene.memcell_ids); } catch { continue; }
+
+      // Get turn IDs from memcells in this scene
+      const cellTurnIds = this.history.db.prepare(
+        `SELECT DISTINCT turn_id FROM memcells WHERE id IN (${ids.map(() => '?').join(',')}) AND turn_id IS NOT NULL`
+      ).all(...ids).map(r => r.turn_id);
+
+      for (const id of cellTurnIds) turnIdSet.add(id);
+      if (turnIdSet.size >= maxSlots * 4) break;
     }
-    return chunks;
+
+    // Fetch those turns, score by sim + decay
+    const candidateTurns = this.history.getTurnsByIds([...turnIdSet]);
+    const allTurns       = this.history.getSessionTurns(sessionKey);
+    const turnMap        = new Map(allTurns.map(t => [t.id, t]));
+
+    const rankedTurns = candidateTurns
+      .map(t => {
+        const full  = turnMap.get(t.id);
+        const tVec  = full?.embedding ? HistoryStore.toFloat32(full.embedding) : null;
+        const sim   = tVec ? Embedder.cosine(queryVec, tVec) : 0.3;
+        const decay = full?.importance ?? 0.5;
+        return { ...t, score: sim * 0.7 + decay * 0.3 };
+      })
+      .sort((a, b) => b.score - a.score);
+
+    return this._fillBudget(rankedTurns, maxSlots, budget, cpt, minChars, sessionKey);
   }
 
-  _estimateTokens(msgs, charsPerToken) {
-    return msgs.reduce((sum, m) => sum + Math.ceil((m.content?.length ?? 0) / charsPerToken), 0);
+  async _rawTurnRetrieval(sessionKey, queryVec, recencyCount, maxSlots, budget, cpt, minChars) {
+    const allTurns   = this.history.getSessionTurns(sessionKey);
+    const candidates = allTurns.slice(0, Math.max(0, allTurns.length - recencyCount));
+
+    const scored = candidates
+      .filter(t => t.role === 'assistant' && t.content.length >= minChars)
+      .map(t => {
+        const tVec = HistoryStore.toFloat32(t.embedding);
+        const sim  = tVec && queryVec ? Embedder.cosine(queryVec, tVec) : 0;
+        return { ...t, score: sim };
+      })
+      .sort((a, b) => b.score - a.score);
+
+    return this._fillBudget(scored, maxSlots, budget, cpt, minChars, sessionKey);
+  }
+
+  _fillBudget(rankedTurns, maxSlots, budget, cpt, minChars, sessionKey) {
+    const selected = [];
+    const seenIds  = new Set();
+
+    for (const t of rankedTurns) {
+      if (selected.length >= maxSlots) break;
+      if (seenIds.has(t.id)) continue;
+      const cost = Math.ceil((t.content?.length ?? 0) / cpt);
+      if (cost > budget) continue;
+      selected.push(t);
+      seenIds.add(t.id);
+      budget -= cost;
+      this.history.bumpTurnRecall(t.id);
+    }
+
+    // Sort chronologically so context reads naturally
+    selected.sort((a, b) => a.created_at - b.created_at);
+
+    return selected.map(t => ({ role: t.role, content: t.content }));
+  }
+
+  _est(msgs, cpt) {
+    return msgs.reduce((s, m) => s + Math.ceil((m.content?.length ?? 0) / cpt), 0);
   }
 }
 

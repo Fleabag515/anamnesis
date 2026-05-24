@@ -1,41 +1,58 @@
-# context-weaver
+# Anamnesis
 
-An intelligent context rotation proxy for LLM inference. Sits between your OpenClaw (or any OpenAI-compatible client) and llama-server, giving the model a smarter view of conversation history than a simple sliding window.
+*From Greek ἀνάμνησις — the deep recollection of what the mind already knows.*
 
-## The problem
-
-LLMs have a fixed context window. Naive solutions either:
-- **Truncate** — throw away old turns entirely (the model forgets)
-- **Summarise** — compress old context into a summary (lossy, irreversible)
-
-## How context-weaver works
-
-Every turn is stored persistently in a local SQLite database with its embedding vector. Each time you send a new message, context-weaver assembles the context window like this:
-
-```
-┌─────────────────────────────┐
-│  System messages (always)   │
-├─────────────────────────────┤
-│  Rotating old turns         │  ← scored by cosine similarity to current query
-│  (relevance-selected)       │    oldest→newest within selection
-├─────────────────────────────┤
-│  Last N turns verbatim      │  ← always included (recency buffer)
-│  (recency buffer)           │
-└─────────────────────────────┘
-```
-
-Old turns that aren't relevant to the current message are silently dropped *for this turn* — but stay in the DB and can surface again later when they become relevant. The model always has:
-1. Everything recent (last 8 turns by default)
-2. The most relevant old context for what's being discussed right now
+A self-organizing memory proxy for LLM agents. Inspired by [EverMemOS](https://arxiv.org/abs/2601.02163), Anamnesis gives Mark persistent, structured, intelligently-retrieved memory across unlimited context and sessions.
 
 ## Architecture
 
 ```
-OpenClaw ──→ context-weaver :8084 ──→ llama-server :8083
-                    │
-                    ├── SQLite history DB  (~/.context-weaver/history.db)
-                    └── Ollama embeddings  (nomic-embed-cpu)
+OpenClaw ──→ Anamnesis :8084 ──→ llama-server :8083
+                 │
+                 ├── turns       (raw episodic trace, SQLite)
+                 ├── memcells    (atomic facts extracted by LLM)
+                 ├── memscenes   (thematic clusters, self-organizing)
+                 └── decay       (intelligent forgetting via score decay)
 ```
+
+### Memory Pipeline
+
+```
+Turn received
+    │
+    ├─→ Store raw turn + embedding
+    │
+    └─→ [background] MemCell extraction (gemma4:e2b)
+              │
+              └─→ [periodic] MemScene consolidation
+                      │
+                      └─→ Decay scoring + pruning
+```
+
+### Retrieval (per request)
+
+```
+Query embedding
+    │
+    ├─→ Score all MemScenes by cosine similarity
+    │       └─→ Expand top scenes → constituent turn IDs
+    │               └─→ Rank by sim + decay weight
+    │
+    └─→ Fallback: raw turn similarity (no scenes yet)
+
+Final context window:
+  [ system ] + [ rotating relevant turns ] + [ last 8 turns verbatim ]
+```
+
+## What makes this different from a sliding window
+
+| | Sliding window | Anamnesis |
+|---|---|---|
+| Old turns | Dropped permanently | Stored forever, retrieved when relevant |
+| Retrieval | Recency only | Scene-guided cosine similarity |
+| Memory structure | Flat | Hierarchical (turn → cell → scene) |
+| Forgetting | Hard cutoff | Soft decay by age + recall frequency |
+| Background processing | None | MemCell extraction + scene consolidation |
 
 ## Install
 
@@ -43,25 +60,32 @@ OpenClaw ──→ context-weaver :8084 ──→ llama-server :8083
 sudo bash install.sh
 ```
 
-Then update OpenClaw's `llamaserver.baseUrl` to `http://127.0.0.1:8084/v1`.
+Then point OpenClaw's `llamaserver.baseUrl` to `http://127.0.0.1:8084/v1`.
 
 ## Config (`config.json`)
 
 | Key | Default | Description |
 |-----|---------|-------------|
-| `proxy.port` | `8084` | Port this proxy listens on |
-| `upstream.baseUrl` | `http://127.0.0.1:8083` | llama-server URL |
-| `context.tokenBudget` | `65536` | Total token budget (match llama-server ctx-size) |
-| `context.recencyTurns` | `8` | Turn pairs always included verbatim |
-| `context.rotatingSlots` | `6` | Max old turn pairs added via relevance scoring |
-| `context.charsPerToken` | `3.5` | Token estimation ratio |
-| `embedding.model` | `nomic-embed-cpu:latest` | Ollama model for embeddings |
-| `history.maxAgeDays` | `90` | Auto-prune turns older than this |
+| `context.tokenBudget` | 65536 | Total token budget |
+| `context.recencyTurns` | 8 | Turn pairs always in context |
+| `context.rotatingSlots` | 6 | Old turns added via scene retrieval |
+| `extraction.model` | `gemma4:e2b` | Ollama model for MemCell extraction |
+| `memory.consolidationIntervalMs` | 120000 | How often scenes are rebuilt (ms) |
+| `memory.sceneClusterThreshold` | 0.72 | Cosine sim threshold for clustering |
+| `memory.decayPruneThreshold` | 0.05 | Score below which cells are pruned |
+| `history.maxAgeDays` | 90 | Raw turn retention |
+
+## Status
+
+```
+GET http://127.0.0.1:8084/anamnesis/status
+→ { "status": "ok", "turns": 142, "cells": 831, "scenes": 24 }
+```
 
 ## Roadmap
 
-- [ ] Streaming response support (store assistant turn from streamed chunks)
-- [ ] Per-agent session isolation via OpenClaw headers
-- [ ] Web UI for browsing/searching history
+- [ ] Streaming response storage
+- [ ] Foresight signals (predict likely future context needs)
+- [ ] Cross-session scene merging
 - [ ] OpenClaw plugin wrapper
-- [ ] Configurable recency decay curve
+- [ ] Web UI for browsing memory graph

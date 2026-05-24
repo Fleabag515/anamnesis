@@ -11,6 +11,9 @@
     "ollamaUrl": "http://127.0.0.1:11434",
     "model": "nomic-embed-cpu:latest"
   },
+  "extraction": {
+    "model": "gemma4:e2b"
+  },
   "context": {
     "tokenBudget": 65536,
     "systemReserveTokens": 4096,
@@ -19,8 +22,15 @@
     "charsPerToken": 3.5,
     "minChunkChars": 50
   },
+  "memory": {
+    "consolidationIntervalMs": 120000,
+    "consolidationBatchSize": 50,
+    "sceneClusterThreshold": 0.72,
+    "minSceneSize": 2,
+    "decayPruneThreshold": 0.05
+  },
   "history": {
-    "dbPath": "/home/fleabag/.context-weaver/history.db",
+    "dbPath": "/home/fleabag/.anamnesis/history.db",
     "maxAgeDays": 90
   }
 }
