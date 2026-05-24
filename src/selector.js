@@ -1,17 +1,28 @@
 /**
- * selector.js — Scene-guided context selection (EverMemOS-inspired)
+ * selector.js — Scene-guided context selection with memory injection
  *
- * Retrieval hierarchy:
- *   1. Embed current query
- *   2. Score all MemScenes by cosine similarity → pick top K scenes
- *   3. Expand scenes → get their constituent turn IDs
- *   4. Fill rotating slots with turns from top scenes (decay-weighted)
- *   5. Fall back to raw turn similarity if no scenes exist yet
- *   6. Always append recency buffer (last N turns verbatim)
+ * Two-stage pipeline inspired by EverMemOS + claude-mem's before_prompt_build:
+ *
+ * Stage 1 — System message injection:
+ *   Find top relevant MemScenes, build a compact <memory> block, and
+ *   append it to the system message. This mirrors claude-mem's approach:
+ *   the model is explicitly told what it knows before the conversation starts.
+ *
+ * Stage 2 — Rotating turn slots:
+ *   Fill remaining token budget with turns from relevant scenes.
+ *   Falls back to raw turn similarity if no scenes exist yet.
+ *
+ * Final context shape:
+ *   [system + <memory> block] + [rotating relevant turns] + [last N turns verbatim]
  */
 
 const HistoryStore = require('./history.js');
 const Embedder     = require('./embedder.js');
+
+// How many scenes to summarise in the injection block
+const INJECTION_SCENES = 3;
+// Minimum scene similarity to include in injection
+const INJECTION_MIN_SIM = 0.45;
 
 class Selector {
   constructor(config, historyStore, embedder) {
@@ -21,100 +32,132 @@ class Selector {
   }
 
   async select(sessionKey, incoming) {
-    const {
-      tokenBudget, systemReserveTokens,
-      recencyTurns, rotatingSlots, charsPerToken, minChunkChars
-    } = this.cfg;
+    const { tokenBudget, systemReserveTokens, recencyTurns, rotatingSlots, charsPerToken, minChunkChars } = this.cfg;
 
-    // Split system from conversation
     const systemMsgs = incoming.filter(m => m.role === 'system');
     const convoMsgs  = incoming.filter(m => m.role !== 'system');
     const currentMsg = convoMsgs[convoMsgs.length - 1];
     const queryText  = currentMsg?.content ?? '';
 
-    // Embed query
     const queryVec = await this.embedder.embed(queryText);
 
-    // Recency buffer (always included)
+    // Recency buffer — always included verbatim
     const recencyWindow = recencyTurns * 2;
     const recencyMsgs   = convoMsgs.slice(Math.max(0, convoMsgs.length - recencyWindow));
 
-    // Budget accounting
-    const systemTokens  = this._est(systemMsgs, charsPerToken);
+    // Load scenes once — used by both injection and rotation
+    const scenes = this.history.getScenes(sessionKey);
+
+    // ─── Stage 1: Build memory injection block ───────────────────────────────
+    const enrichedSystem = this._buildSystemWithMemory(systemMsgs, scenes, queryVec);
+
+    // ─── Budget accounting ────────────────────────────────────────────────────
+    const systemTokens  = this._est(enrichedSystem, charsPerToken);
     const recencyTokens = this._est(recencyMsgs, charsPerToken);
     let budget = tokenBudget - systemReserveTokens - systemTokens - recencyTokens;
 
-    // Try scene-guided retrieval first
-    const scenes = this.history.getScenes(sessionKey);
+    // ─── Stage 2: Rotating turn slots ────────────────────────────────────────
     let rotatingMsgs = [];
-
     if (scenes.length > 0 && queryVec) {
-      rotatingMsgs = await this._sceneGuidedRetrieval(
-        sessionKey, queryVec, scenes, rotatingSlots, budget, charsPerToken, minChunkChars
-      );
+      rotatingMsgs = await this._sceneGuidedRetrieval(sessionKey, queryVec, scenes, rotatingSlots, budget, charsPerToken, minChunkChars);
     } else {
-      // Fall back: raw turn similarity
-      rotatingMsgs = await this._rawTurnRetrieval(
-        sessionKey, queryVec, recencyMsgs.length, rotatingSlots, budget, charsPerToken, minChunkChars
-      );
+      rotatingMsgs = await this._rawTurnRetrieval(sessionKey, queryVec, recencyMsgs.length, rotatingSlots, budget, charsPerToken, minChunkChars);
     }
 
-    const final = [...systemMsgs, ...rotatingMsgs, ...recencyMsgs];
+    const final = [...enrichedSystem, ...rotatingMsgs, ...recencyMsgs];
 
     const stats = this.history.stats(sessionKey);
     console.log(
       `[selector] session=${sessionKey.slice(0,8)} ` +
       `turns=${stats.turns} cells=${stats.cells} scenes=${stats.scenes} ` +
-      `rotating=${rotatingMsgs.length} recency=${recencyMsgs.length} ` +
-      `total_msgs=${final.length}`
+      `injected=${enrichedSystem.length > systemMsgs.length ? 'yes' : 'no'} ` +
+      `rotating=${rotatingMsgs.length} recency=${recencyMsgs.length}`
     );
 
     return final;
   }
 
-  async _sceneGuidedRetrieval(sessionKey, queryVec, scenes, maxSlots, budget, cpt, minChars) {
-    // Score scenes
-    const scored = scenes
+  /**
+   * Append a <memory> block to the last system message.
+   * Only includes scenes above the similarity threshold, so irrelevant
+   * memories are never injected (preventing the "skiptracer" problem).
+   */
+  _buildSystemWithMemory(systemMsgs, scenes, queryVec) {
+    if (!scenes.length || !queryVec) return systemMsgs;
+
+    // Score and filter scenes
+    const relevant = scenes
       .map(s => {
         const sVec = HistoryStore.toFloat32(s.embedding);
         const sim  = sVec ? Embedder.cosine(queryVec, sVec) : 0;
         return { ...s, sim };
       })
+      .filter(s => s.sim >= INJECTION_MIN_SIM)
       .sort((a, b) => b.sim - a.sim)
-      .slice(0, maxSlots * 2); // oversample
+      .slice(0, INJECTION_SCENES);
 
-    // Collect turn IDs from top scenes
+    if (!relevant.length) return systemMsgs;
+
+    // Build compact memory block
+    const memLines = relevant.map(s =>
+      `• [${s.title}] ${s.summary}`
+    ).join('\n');
+
+    const memBlock = `\n\n<memory>\nRelevant context from previous sessions:\n${memLines}\n</memory>`;
+
+    // Append to the last system message (or create one if none exist)
+    if (systemMsgs.length === 0) {
+      return [{ role: 'system', content: memBlock.trim() }];
+    }
+
+    const enriched = [...systemMsgs];
+    enriched[enriched.length - 1] = {
+      ...enriched[enriched.length - 1],
+      content: enriched[enriched.length - 1].content + memBlock
+    };
+    return enriched;
+  }
+
+  async _sceneGuidedRetrieval(sessionKey, queryVec, scenes, maxSlots, budget, cpt, minChars) {
+    const scored = scenes
+      .map(s => {
+        const sVec = HistoryStore.toFloat32(s.embedding);
+        // Weight similarity by scene's average importance
+        const sim  = sVec ? Embedder.cosine(queryVec, sVec) : 0;
+        return { ...s, weightedSim: sim * (0.7 + s.avg_importance * 0.3) };
+      })
+      .sort((a, b) => b.weightedSim - a.weightedSim)
+      .slice(0, maxSlots * 2);
+
     const turnIdSet = new Set();
     for (const scene of scored) {
       this.history.bumpSceneRecall(scene.id);
       let ids;
       try { ids = JSON.parse(scene.memcell_ids); } catch { continue; }
+      if (!ids.length) continue;
 
-      // Get turn IDs from memcells in this scene
+      const ph = ids.map(() => '?').join(',');
       const cellTurnIds = this.history.db.prepare(
-        `SELECT DISTINCT turn_id FROM memcells WHERE id IN (${ids.map(() => '?').join(',')}) AND turn_id IS NOT NULL`
+        `SELECT DISTINCT turn_id FROM memcells WHERE id IN (${ph}) AND turn_id IS NOT NULL`
       ).all(...ids).map(r => r.turn_id);
 
       for (const id of cellTurnIds) turnIdSet.add(id);
       if (turnIdSet.size >= maxSlots * 4) break;
     }
 
-    // Fetch those turns, score by sim + decay
     const candidateTurns = this.history.getTurnsByIds([...turnIdSet]);
     const allTurns       = this.history.getSessionTurns(sessionKey);
     const turnMap        = new Map(allTurns.map(t => [t.id, t]));
 
-    const rankedTurns = candidateTurns
-      .map(t => {
-        const full  = turnMap.get(t.id);
-        const tVec  = full?.embedding ? HistoryStore.toFloat32(full.embedding) : null;
-        const sim   = tVec ? Embedder.cosine(queryVec, tVec) : 0.3;
-        const decay = full?.importance ?? 0.5;
-        return { ...t, score: sim * 0.7 + decay * 0.3 };
-      })
-      .sort((a, b) => b.score - a.score);
+    const ranked = candidateTurns.map(t => {
+      const full  = turnMap.get(t.id);
+      const tVec  = full?.embedding ? HistoryStore.toFloat32(full.embedding) : null;
+      const sim   = tVec ? Embedder.cosine(queryVec, tVec) : 0.3;
+      const imp   = full?.importance ?? 0.5;
+      return { ...t, score: sim * 0.7 + imp * 0.3 };
+    }).sort((a, b) => b.score - a.score);
 
-    return this._fillBudget(rankedTurns, maxSlots, budget, cpt, minChars, sessionKey);
+    return this._fillBudget(ranked, maxSlots, budget, cpt, minChars, sessionKey);
   }
 
   async _rawTurnRetrieval(sessionKey, queryVec, recencyCount, maxSlots, budget, cpt, minChars) {
@@ -133,11 +176,10 @@ class Selector {
     return this._fillBudget(scored, maxSlots, budget, cpt, minChars, sessionKey);
   }
 
-  _fillBudget(rankedTurns, maxSlots, budget, cpt, minChars, sessionKey) {
+  _fillBudget(ranked, maxSlots, budget, cpt, minChars, sessionKey) {
     const selected = [];
     const seenIds  = new Set();
-
-    for (const t of rankedTurns) {
+    for (const t of ranked) {
       if (selected.length >= maxSlots) break;
       if (seenIds.has(t.id)) continue;
       const cost = Math.ceil((t.content?.length ?? 0) / cpt);
@@ -147,10 +189,7 @@ class Selector {
       budget -= cost;
       this.history.bumpTurnRecall(t.id);
     }
-
-    // Sort chronologically so context reads naturally
-    selected.sort((a, b) => a.created_at - b.created_at);
-
+    selected.sort((a, b) => (a.created_at ?? 0) - (b.created_at ?? 0));
     return selected.map(t => ({ role: t.role, content: t.content }));
   }
 
