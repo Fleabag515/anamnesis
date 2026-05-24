@@ -16,17 +16,43 @@ SERVICE_USER="${SUDO_USER:-$(whoami)}"
 SERVICE_NAME="anamnesis"
 
 # ─── Locate node ────────────────────────────────────────────────────────────
-# Try NVM (latest installed version) first because the project requires
-# native module compilation against a specific Node ABI; fall back to PATH.
+# Prefer NVM's latest *LTS* version (even-major releases: 18, 20, 22, 24, …)
+# over odd-major dev releases (19, 21, 23, 25). The service is long-running
+# and depends on a native addon (better-sqlite3) whose ABI is pinned to the
+# build-time Node — silently picking a non-LTS minor a user just happens to
+# have installed would force a rebuild on every install.sh run.
 NVM_DIR_USER="/home/${SERVICE_USER}/.nvm"
 NODE_BIN=""
 NPM_BIN=""
 
+pick_nvm_node() {
+  local versions_dir="$1"
+  local filter="$2"  # extended regex; empty = anything
+  local pick
+  if [ -z "$filter" ]; then
+    pick="$(ls -1 "$versions_dir" 2>/dev/null | sort -V | tail -n1 || true)"
+  else
+    pick="$(ls -1 "$versions_dir" 2>/dev/null | grep -E "$filter" | sort -V | tail -n1 || true)"
+  fi
+  if [ -n "$pick" ] && [ -x "$versions_dir/$pick/bin/node" ]; then
+    echo "$versions_dir/$pick"
+  fi
+}
+
 if [ -d "${NVM_DIR_USER}/versions/node" ]; then
-  LATEST_NODE="$(ls -1 "${NVM_DIR_USER}/versions/node" | sort -V | tail -n1 || true)"
-  if [ -n "${LATEST_NODE}" ] && [ -x "${NVM_DIR_USER}/versions/node/${LATEST_NODE}/bin/node" ]; then
-    NODE_BIN="${NVM_DIR_USER}/versions/node/${LATEST_NODE}/bin/node"
-    NPM_BIN="${NVM_DIR_USER}/versions/node/${LATEST_NODE}/bin/npm"
+  # First try: LTS only (even-major). Matches v<…><0|2|4|6|8>.x.x
+  # so v18 / v20 / v22 / v24 win over v17 / v19 / v21 / v23 / v25.
+  LTS_PREFIX="$(pick_nvm_node "${NVM_DIR_USER}/versions/node" '^v[0-9]*[02468]\.')"
+  if [ -n "$LTS_PREFIX" ]; then
+    NODE_BIN="${LTS_PREFIX}/bin/node"
+    NPM_BIN="${LTS_PREFIX}/bin/npm"
+  else
+    # No LTS installed; fall back to whatever's newest under NVM.
+    ANY_PREFIX="$(pick_nvm_node "${NVM_DIR_USER}/versions/node" '')"
+    if [ -n "$ANY_PREFIX" ]; then
+      NODE_BIN="${ANY_PREFIX}/bin/node"
+      NPM_BIN="${ANY_PREFIX}/bin/npm"
+    fi
   fi
 fi
 
