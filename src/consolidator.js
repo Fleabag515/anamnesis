@@ -1,21 +1,26 @@
 /**
- * consolidator.js — MemScene building
+ * consolidator.js — MemScene building.
  *
  * Periodically clusters unclustered MemCells into thematic MemScenes.
- * Uses cosine similarity to group related facts, then generates a title
- * and summary for each scene via LLM.
+ * Uses cosine similarity to group related facts, then generates a title +
+ * summary for each scene via an LLM call.
  *
  * Algorithm:
- *   1. Fetch all unclustered memcells for each active session
- *   2. Build similarity graph between cells
- *   3. Greedily cluster by similarity threshold
- *   4. For each cluster ≥ minSize: generate title+summary, upsert MemScene
- *   5. Update decay scores across all memcells
+ *   1. Fetch all unclustered memcells for each active session.
+ *   2. Build similarity graph between cells (cosine, single pass).
+ *   3. Greedily cluster by sceneClusterThreshold.
+ *   4. For each cluster ≥ minSceneSize: generate title+summary, upsert MemScene.
+ *   5. Update decay scores across all memcells, prune below threshold.
+ *
+ * Scheduling: self-rescheduling setTimeout chain with a `_running` guard so
+ * a slow run can never overlap with the next tick (the previous setInterval
+ * version could stack concurrent runs against the same session).
  */
 
-const http      = require('http');
-const Embedder  = require('./embedder.js');
-const HistoryStore = require('./history.js');
+const Embedder            = require('./embedder.js');
+const HistoryStore        = require('./history.js');
+const { generate, tryParseJsonObject } = require('./lib/ollama.js');
+const log                 = require('./lib/logger.js').make('consolidator');
 
 const SCENE_PROMPT = `You are a memory organizer. Given a list of related facts, create:
 1. A short scene title (3-6 words, like a chapter heading)
@@ -29,28 +34,53 @@ Facts:
 
 class Consolidator {
   constructor(config, historyStore, embedder) {
-    this.cfg      = config;
-    this.history  = historyStore;
-    this.embedder = embedder;
-    this._timer   = null;
+    this.cfg       = config;
+    this.history   = historyStore;
+    this.embedder  = embedder;
+    this._timer    = null;
+    this._running  = false;
+    this._stopped  = false;
   }
 
   start(intervalMs) {
-    this._timer = setInterval(() => this.run().catch(e =>
-      console.warn('[consolidator] run error:', e.message)
-    ), intervalMs);
-    console.log(`[consolidator] running every ${intervalMs / 1000}s`);
+    this._stopped = false;
+    this._intervalMs = intervalMs;
+    log.info(`running every ${intervalMs / 1000}s`);
+    this._scheduleNext(intervalMs);
   }
 
   stop() {
-    if (this._timer) clearInterval(this._timer);
+    this._stopped = true;
+    if (this._timer) clearTimeout(this._timer);
+    this._timer = null;
+  }
+
+  _scheduleNext(delayMs) {
+    if (this._stopped) return;
+    this._timer = setTimeout(async () => {
+      if (this._running) {
+        // Belt-and-braces: should be unreachable because we await `run()`
+        // before scheduling the next timer, but guard regardless.
+        this._scheduleNext(this._intervalMs);
+        return;
+      }
+      this._running = true;
+      try {
+        await this.run();
+      } catch (e) {
+        log.warn('run error:', e.message);
+      } finally {
+        this._running = false;
+        this._scheduleNext(this._intervalMs);
+      }
+    }, delayMs);
   }
 
   async run() {
-    // Find all sessions with unclustered memcells
-    const sessions = this.history.db.prepare(`
-      SELECT DISTINCT session_key FROM memcells WHERE scene_id IS NULL
-    `).all().map(r => r.session_key);
+    const sessions = this.history.db
+      .prepare('SELECT DISTINCT session_key FROM memcells WHERE scene_id IS NULL')
+      .all()
+      .map((r) => r.session_key);
 
     for (const sessionKey of sessions) {
       await this._consolidateSession(sessionKey);
@@ -59,7 +89,7 @@ class Consolidator {
         sessionKey, this.cfg.memory.decayPruneThreshold
       );
       if (pruned > 0)
-        console.log(`[consolidator] session=${sessionKey.slice(0,8)} pruned ${pruned} decayed memcells`);
+        log.info(`session=${sessionKey.slice(0, 8)} pruned ${pruned} decayed memcell(s)`);
     }
   }
 
@@ -69,13 +99,14 @@ class Consolidator {
     );
     if (cells.length < this.cfg.memory.minSceneSize) return;
 
-    // Decode embeddings
-    const decoded = cells.map(c => ({
-      ...c,
-      vec: HistoryStore.toFloat32(c.embedding)
-    })).filter(c => c.vec);
+    const currentModel = this.embedder.model;
+    const decoded = cells
+      .map((c) => ({ ...c, vec: HistoryStore.toFloat32(c.embedding) }))
+      // Skip cells whose embedding came from a different model — cosine
+      // across model families is meaningless. They'll re-cluster naturally
+      // once the next batch from the current model arrives.
+      .filter((c) => c.vec && (!c.embedding_model || c.embedding_model === currentModel));
 
-    // Greedy clustering by cosine similarity
     const threshold = this.cfg.memory.sceneClusterThreshold;
     const clusters  = [];
     const assigned  = new Set();
@@ -84,7 +115,6 @@ class Consolidator {
       if (assigned.has(i)) continue;
       const cluster = [decoded[i]];
       assigned.add(i);
-
       for (let j = i + 1; j < decoded.length; j++) {
         if (assigned.has(j)) continue;
         const sim = Embedder.cosine(decoded[i].vec, decoded[j].vec);
@@ -100,72 +130,47 @@ class Consolidator {
     for (const cluster of clusters) {
       if (cluster.length < this.cfg.memory.minSceneSize) continue;
 
-      const facts     = cluster.map(c => c.content);
+      const facts     = cluster.map((c) => c.content);
       const sceneData = await this._generateScene(facts);
       if (!sceneData) continue;
 
+      const avgImportance =
+        cluster.reduce((s, c) => s + (c.importance ?? 0.5), 0) / cluster.length;
       const sceneEmbed = await this.embedder.embed(sceneData.summary);
-      const cellIds    = cluster.map(c => c.id);
+      const cellIds    = cluster.map((c) => c.id);
 
       const sceneId = this.history.insertScene(
         sessionKey,
         sceneData.title,
         sceneData.summary,
         sceneEmbed,
-        cellIds
+        cellIds,
+        avgImportance,
+        currentModel,
       );
-
-      for (const cell of cluster) {
-        this.history.assignMemcellToScene(cell.id, sceneId);
-      }
+      for (const cell of cluster) this.history.assignMemcellToScene(cell.id, sceneId);
       sceneCount++;
     }
 
     if (sceneCount > 0)
-      console.log(`[consolidator] session=${sessionKey.slice(0,8)} built ${sceneCount} new scenes from ${cells.length} memcells`);
+      log.info(`session=${sessionKey.slice(0, 8)} built ${sceneCount} new scene(s) from ${cells.length} memcell(s)`);
   }
 
   async _generateScene(facts) {
     const factList = facts.map((f, i) => `${i + 1}. ${f}`).join('\n');
-    const body = JSON.stringify({
-      model:  this.cfg.extraction.model,
-      prompt: SCENE_PROMPT + factList,
-      stream: false,
-      options: { temperature: 0.2, num_predict: 256 }
-    });
-
     try {
-      const raw    = await this._post('/api/generate', body);
-      const parsed = JSON.parse(raw);
-      const text   = parsed.response?.trim() ?? '';
-      const match  = text.match(/\{[\s\S]*\}/);
-      if (!match) return null;
-      return JSON.parse(match[0]);
+      const text = await generate(this.cfg.embedding.ollamaUrl, {
+        model:   this.cfg.extraction.model,
+        prompt:  SCENE_PROMPT + factList,
+        options: { temperature: 0.2, num_predict: 256 },
+        timeoutMs: 90000,
+      });
+      const parsed = tryParseJsonObject(text);
+      if (!parsed?.title || !parsed?.summary) return null;
+      return { title: String(parsed.title), summary: String(parsed.summary) };
     } catch {
       return null;
     }
-  }
-
-  _post(path, body) {
-    return new Promise((resolve, reject) => {
-      const url  = new URL(this.cfg.embedding.ollamaUrl);
-      const opts = {
-        hostname: url.hostname,
-        port:     url.port || 80,
-        path,
-        method:   'POST',
-        headers:  { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) }
-      };
-      const req = http.request(opts, res => {
-        let buf = '';
-        res.on('data', d => buf += d);
-        res.on('end', () => resolve(buf));
-      });
-      req.on('error', reject);
-      req.setTimeout(90000, () => { req.destroy(); reject(new Error('consolidator timeout')); });
-      req.write(body);
-      req.end();
-    });
   }
 }
 

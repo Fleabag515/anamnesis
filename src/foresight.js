@@ -1,25 +1,28 @@
 /**
- * foresight.js — Future-intention extraction (EverMemOS-style Foresight)
+ * foresight.js — Future-intention extraction (EverMemOS-style Foresight).
  *
  * Runs in parallel with memcell extraction. Each assistant turn is scanned
  * for statements about future plans, goals, or intended actions. These are
  * stored as foresights so the model always knows what it was about to do.
  *
  * Fields per foresight:
- *   - intention: what is planned (≤25 words)
- *   - target:    the object/subject of the intention (tool, file, project, etc.)
- *   - timeframe: soon | days | weeks | months | ongoing
- *   - confidence: 0.0–1.0 (how certain is this a real intention vs hedged language)
+ *   - intention : what is planned (≤25 words)
+ *   - target    : the object/subject (file, tool, project, system) or ""
+ *   - timeframe : soon | days | weeks | months | ongoing
+ *   - confidence: 0.0–1.0 — confidence ≥ 0.4 only, hedged language skipped
  *
- * Timeframe guide:
- *   soon     = within this conversation or immediately after
- *   days     = mentioned as happening in the next few days
- *   weeks    = next few weeks
- *   months   = longer-term
- *   ongoing  = recurring or habitual intention
+ * IMPORTANT — own flag, not shared with extractor:
+ *   This module now tracks its own `foresight_scanned` column. Previously
+ *   it piggybacked on `turns.extracted`, which only the memcell extractor
+ *   set. Whichever extractor finished a turn first silently starved the
+ *   other for that turn.
  */
 
-const http = require('http');
+const { chat, tryParseJsonArray } = require('./lib/ollama.js');
+const { shouldProcessTurn }       = require('./lib/heuristics.js');
+const log                         = require('./lib/logger.js').make('foresight');
+
+const VALID_TIMEFRAMES = ['soon', 'days', 'weeks', 'months', 'ongoing'];
 
 const FORESIGHT_PROMPT = `Scan this AI assistant turn for future intentions — things the assistant or user plans to do, build, fix, or try.
 
@@ -47,16 +50,6 @@ Example:
 Turn to scan:
 `;
 
-const VALID_TIMEFRAMES = ['soon', 'days', 'weeks', 'months', 'ongoing'];
-
-// Mirror the same heuristic as extractor.js
-function shouldScan(content) {
-  if (!content || content.length < 80) return false;
-  if (content.startsWith('<') && content.includes('</')) return false;
-  if (content.split('\n').length < 2 && content.length < 200) return false;
-  return true;
-}
-
 class ForesightExtractor {
   constructor(config, historyStore) {
     this.cfg       = config.foresight;
@@ -67,15 +60,11 @@ class ForesightExtractor {
   }
 
   async processBacklog() {
-    const pending = this.history.getUnextractedTurns(this.cfg.startupBacklogLimit);
-    // Only process turns that haven't had foresight extraction yet
-    // We re-use the memcell extracted flag as a proxy — turns not yet extracted
-    // by memcells haven't been seen by foresight either (both run together)
-    const needsScan = pending.filter(t => t.role === 'assistant');
-    if (!needsScan.length) return;
-    console.log(`[foresight] scanning ${needsScan.length} backlog turns for intentions`);
-    for (const turn of needsScan) await this._scanTurn(turn);
-    console.log('[foresight] backlog scan complete');
+    const pending = this.history.getUnscannedAssistantTurns(this.cfg.startupBacklogLimit);
+    if (!pending.length) return;
+    log.info(`scanning ${pending.length} backlog turn(s) for intentions`);
+    for (const turn of pending) await this._scanTurn(turn);
+    log.info('backlog scan complete');
   }
 
   processBatch() {
@@ -90,21 +79,21 @@ class ForesightExtractor {
 
   async flushInFlight() {
     if (this._inflight) {
-      console.log('[foresight] flushing in-flight scan before shutdown...');
-      await Promise.race([this._inflight, new Promise(r => setTimeout(r, 15000))]);
+      log.info('flushing in-flight scan before shutdown...');
+      await Promise.race([this._inflight, new Promise((r) => setTimeout(r, 15000))]);
     }
   }
 
   async _runBatch() {
-    // Pull the most recent assistant turns not yet foresight-scanned
-    // We use a small batch (same as extractor) — runs in parallel
-    const turns = this.history.getUnextractedTurns(5);
-    const asst  = turns.filter(t => t.role === 'assistant');
-    for (const turn of asst) await this._scanTurn(turn);
+    const turns = this.history.getUnscannedAssistantTurns(5);
+    for (const turn of turns) await this._scanTurn(turn);
   }
 
   async _scanTurn(turn) {
-    if (!shouldScan(turn.content)) return;
+    if (!shouldProcessTurn(turn.content)) {
+      this.history.markForesightScanned(turn.id);
+      return;
+    }
 
     let items = null;
     for (let attempt = 0; attempt <= this.cfg.maxRetries; attempt++) {
@@ -113,71 +102,47 @@ class ForesightExtractor {
         if (items !== null) break;
       } catch (err) {
         if (attempt === this.cfg.maxRetries)
-          console.warn(`[foresight] turn ${turn.id} failed after ${attempt + 1} attempts:`, err.message);
+          log.warn(`turn ${turn.id} failed after ${attempt + 1} attempts:`, err.message);
       }
     }
 
-    if (!items?.length) return;
+    if (!items?.length) {
+      this.history.markForesightScanned(turn.id);
+      return;
+    }
 
     let count = 0;
     for (const item of items) {
-      const intention  = (item?.intention ?? '').trim();
+      const intention = (item?.intention ?? '').trim();
       if (!intention || intention.length < 8) continue;
 
-      const target     = (item?.target ?? '').trim();
-      const timeframe  = VALID_TIMEFRAMES.includes(item?.timeframe) ? item.timeframe : 'soon';
+      const target    = (item?.target ?? '').trim();
+      const timeframe = VALID_TIMEFRAMES.includes(item?.timeframe) ? item.timeframe : 'soon';
       const confidence = typeof item?.confidence === 'number'
         ? Math.min(1, Math.max(0, item.confidence))
         : 0.7;
-
       if (confidence < 0.4) continue;
 
-      this.history.insertForesight(turn.session_key, turn.id, intention, target, timeframe, confidence);
+      this.history.insertForesight(
+        turn.session_key, turn.id, intention, target, timeframe, confidence
+      );
       count++;
     }
 
+    this.history.markForesightScanned(turn.id);
     if (count > 0)
-      console.log(`[foresight] turn ${turn.id} → ${count} foresight(s) (session=${turn.session_key.slice(0,8)})`);
+      log.info(`turn ${turn.id} → ${count} foresight(s) (session=${turn.session_key.slice(0, 8)})`);
   }
 
   async _callLLM(content) {
     const truncated = content.length > 2500 ? content.slice(0, 2500) + '...' : content;
-    const body = JSON.stringify({
-      model:    this.cfg.model,
-      messages: [{ role: 'user', content: FORESIGHT_PROMPT + truncated }],
-      stream:   false,
-      think:    false,
-      options:  { temperature: 0.1, num_predict: 400 }
+    const text = await chat(this.ollamaUrl, {
+      model:     this.cfg.model,
+      messages:  [{ role: 'user', content: FORESIGHT_PROMPT + truncated }],
+      options:   { temperature: 0.1, num_predict: 400 },
+      timeoutMs: this.cfg.timeoutMs,
     });
-
-    const raw    = await this._post('/api/chat', body);
-    const parsed = JSON.parse(raw);
-    const text   = (parsed?.message?.content ?? '').trim();
-
-    if (!text) return [];
-
-    const match = text.match(/\[[\s\S]*?\]/);
-    if (!match) return [];
-    const arr = JSON.parse(match[0]);
-    return Array.isArray(arr) ? arr : [];
-  }
-
-  _post(path, body) {
-    return new Promise((resolve, reject) => {
-      const url  = new URL(this.ollamaUrl);
-      const opts = {
-        hostname: url.hostname, port: url.port || 80, path, method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) }
-      };
-      const req = http.request(opts, res => {
-        let buf = '';
-        res.on('data', d => buf += d);
-        res.on('end', () => resolve(buf));
-      });
-      req.on('error', reject);
-      req.setTimeout(this.cfg.timeoutMs, () => { req.destroy(); reject(new Error('foresight timeout')); });
-      req.write(body); req.end();
-    });
+    return tryParseJsonArray(text) ?? [];
   }
 }
 
