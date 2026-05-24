@@ -135,16 +135,18 @@ class Extractor {
   async _callLLM(content) {
     const truncated = content.length > 2500 ? content.slice(0, 2500) + '...' : content;
     const body = JSON.stringify({
-      model:   this.cfg.model,
-      prompt:  EXTRACT_PROMPT + truncated,
-      stream:  false,
-      options: { temperature: 0.1, num_predict: 500 }
+      model:    this.cfg.model,
+      messages: [{ role: 'user', content: EXTRACT_PROMPT + truncated }],
+      stream:   false,
+      think:    false,
+      options:  { temperature: 0.1, num_predict: 500 }
     });
 
-    const raw    = await this._post('/api/generate', body);
+    const raw    = await this._post('/api/chat', body);
     const parsed = JSON.parse(raw);
-    const text   = (parsed.response ?? '').trim();
+    const text   = (parsed?.message?.content ?? '').trim();
 
+    if (!text) return null;
     const match = text.match(/\[[\s\S]*?\]/);
     if (!match) return null;
     const arr = JSON.parse(match[0]);

@@ -32,14 +32,16 @@ const config       = JSON.parse(fs.readFileSync(path.join(__dirname, '../config.
 const HistoryStore = require('./history.js');
 const Embedder     = require('./embedder.js');
 const Selector     = require('./selector.js');
-const Extractor    = require('./extractor.js');
-const Consolidator = require('./consolidator.js');
+const Extractor          = require('./extractor.js');
+const ForesightExtractor = require('./foresight.js');
+const Consolidator       = require('./consolidator.js');
 
 const history      = new HistoryStore(config.history.dbPath);
 const embedder     = new Embedder(config.embedding.ollamaUrl, config.embedding.model);
 const selector     = new Selector(config, history, embedder);
-const extractor    = new Extractor(config, history, embedder);
-const consolidator = new Consolidator(config, history, embedder);
+const extractor          = new Extractor(config, history, embedder);
+const foresightExtractor = new ForesightExtractor(config, history);
+const consolidator       = new Consolidator(config, history, embedder);
 
 // Prune old turns
 const pruned = history.prune(config.history.maxAgeDays);
@@ -48,6 +50,9 @@ if (pruned > 0) console.log(`[anamnesis] pruned ${pruned} old turns`);
 // ─── Startup: process any unextracted turns from previous sessions ───────────
 extractor.processBacklog().catch(e =>
   console.warn('[anamnesis] backlog processing error:', e.message)
+);
+foresightExtractor.processBacklog().catch(e =>
+  console.warn('[anamnesis] foresight backlog error:', e.message)
 );
 
 // Start background consolidation
@@ -171,9 +176,12 @@ const server = http.createServer((req, res) => {
               const vec = await embedder.embed(content.slice(0, 2000)).catch(() => null);
               const est = Math.ceil(content.length / config.context.charsPerToken);
               history.insertTurn(sessionKey, 'assistant', content, vec, est);
-              // Trigger background MemCell extraction — non-blocking
+              // Trigger background extraction (memcells + foresights) — non-blocking
               extractor.processBatch().catch(e =>
                 console.warn('[anamnesis] extractor:', e.message)
+              );
+              foresightExtractor.processBatch().catch(e =>
+                console.warn('[anamnesis] foresight:', e.message)
               );
             }
           } catch { /* non-fatal */ }
@@ -209,7 +217,10 @@ async function shutdown(signal) {
   console.log(`[anamnesis] received ${signal}, shutting down gracefully...`);
   consolidator.stop();
   server.close();
-  await extractor.flushInFlight();
+  await Promise.all([
+    extractor.flushInFlight(),
+    foresightExtractor.flushInFlight(),
+  ]);
   console.log('[anamnesis] shutdown complete');
   process.exit(0);
 }

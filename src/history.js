@@ -1,12 +1,13 @@
 /**
- * history.js — SQLite-backed memory store for Anamnesis
+ * history.js — SQLite-backed memory store for Anamnesis v0.3.0
  */
 
 const Database = require('better-sqlite3');
 const fs       = require('fs');
 const path     = require('path');
 
-const CATEGORIES = ['technical','decision','preference','personal','context','other'];
+const CATEGORIES  = ['technical','decision','preference','personal','context','other'];
+const TIMEFRAMES  = ['soon','days','weeks','months','ongoing'];
 
 class HistoryStore {
   constructor(dbPath) {
@@ -18,7 +19,7 @@ class HistoryStore {
   }
 
   _init() {
-    // 1. Create tables
+    // 1. Create tables (base schema — no new columns here, added via _migrate)
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS turns (
         id            INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -56,32 +57,65 @@ class HistoryStore {
         created_at    INTEGER NOT NULL DEFAULT (unixepoch()),
         updated_at    INTEGER NOT NULL DEFAULT (unixepoch())
       );
+
+      CREATE TABLE IF NOT EXISTS foresights (
+        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+        turn_id       INTEGER REFERENCES turns(id) ON DELETE CASCADE,
+        session_key   TEXT    NOT NULL,
+        intention     TEXT    NOT NULL,
+        target        TEXT    NOT NULL DEFAULT '',
+        timeframe     TEXT    NOT NULL DEFAULT 'soon',
+        confidence    REAL    NOT NULL DEFAULT 0.7,
+        fulfilled     INTEGER NOT NULL DEFAULT 0,
+        created_at    INTEGER NOT NULL DEFAULT (unixepoch())
+      );
     `);
 
-    // 2. Migrate — add new columns to existing tables if absent
+    // 2. Migrate — add columns to existing tables
     this._migrate();
 
-    // 3. Create indices (after migration so all columns exist)
+    // 3. Indices (after migration so all columns exist)
     this.db.exec(`
-      CREATE INDEX IF NOT EXISTS idx_turns_session    ON turns(session_key, created_at);
-      CREATE INDEX IF NOT EXISTS idx_turns_extracted  ON turns(extracted);
-      CREATE INDEX IF NOT EXISTS idx_memcells_session ON memcells(session_key, created_at);
-      CREATE INDEX IF NOT EXISTS idx_memcells_scene   ON memcells(scene_id);
-      CREATE INDEX IF NOT EXISTS idx_memcells_cat     ON memcells(category);
-      CREATE INDEX IF NOT EXISTS idx_scenes_session   ON memscenes(session_key, updated_at);
+      CREATE INDEX IF NOT EXISTS idx_turns_session      ON turns(session_key, created_at);
+      CREATE INDEX IF NOT EXISTS idx_turns_extracted    ON turns(extracted);
+      CREATE INDEX IF NOT EXISTS idx_memcells_session   ON memcells(session_key, created_at);
+      CREATE INDEX IF NOT EXISTS idx_memcells_scene     ON memcells(scene_id);
+      CREATE INDEX IF NOT EXISTS idx_memcells_cat       ON memcells(category);
+      CREATE INDEX IF NOT EXISTS idx_scenes_session     ON memscenes(session_key, updated_at);
+      CREATE INDEX IF NOT EXISTS idx_foresights_session ON foresights(session_key, created_at);
+      CREATE INDEX IF NOT EXISTS idx_foresights_active  ON foresights(session_key, fulfilled);
     `);
   }
 
   _migrate() {
-    const cols = this.db.prepare("PRAGMA table_info(memcells)").all().map(c => c.name);
-    if (!cols.includes('importance'))
+    const cellCols = this.db.prepare('PRAGMA table_info(memcells)').all().map(c => c.name);
+    if (!cellCols.includes('importance'))
       this.db.exec("ALTER TABLE memcells ADD COLUMN importance REAL NOT NULL DEFAULT 0.5");
-    if (!cols.includes('category'))
+    if (!cellCols.includes('category'))
       this.db.exec("ALTER TABLE memcells ADD COLUMN category TEXT NOT NULL DEFAULT 'other'");
 
-    const sceneCols = this.db.prepare("PRAGMA table_info(memscenes)").all().map(c => c.name);
+    const sceneCols = this.db.prepare('PRAGMA table_info(memscenes)').all().map(c => c.name);
     if (!sceneCols.includes('avg_importance'))
       this.db.exec("ALTER TABLE memscenes ADD COLUMN avg_importance REAL NOT NULL DEFAULT 0.5");
+
+    // foresights table added in CREATE TABLE IF NOT EXISTS above — no migration needed
+    // but guard in case someone is on a DB from before this version
+    const tables = this.db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all().map(r => r.name);
+    if (!tables.includes('foresights')) {
+      this.db.exec(`
+        CREATE TABLE foresights (
+          id            INTEGER PRIMARY KEY AUTOINCREMENT,
+          turn_id       INTEGER REFERENCES turns(id) ON DELETE CASCADE,
+          session_key   TEXT    NOT NULL,
+          intention     TEXT    NOT NULL,
+          target        TEXT    NOT NULL DEFAULT '',
+          timeframe     TEXT    NOT NULL DEFAULT 'soon',
+          confidence    REAL    NOT NULL DEFAULT 0.7,
+          fulfilled     INTEGER NOT NULL DEFAULT 0,
+          created_at    INTEGER NOT NULL DEFAULT (unixepoch())
+        )
+      `);
+    }
   }
 
   // ─── Turns ────────────────────────────────────────────────────────────────
@@ -151,7 +185,7 @@ class HistoryStore {
     this.db.transaction(() => {
       for (const c of cells) {
         const ageDays  = (now - c.created_at) / 86400;
-        const halfLife = 30 + (c.importance ?? 0.5) * 60; // 30-90 day half-life by importance
+        const halfLife = 30 + (c.importance ?? 0.5) * 60;
         const recency  = Math.exp(-ageDays / halfLife);
         const recall   = Math.log1p(c.recall_count) / 5;
         update.run(Math.min(1.0, recency + recall), c.id);
@@ -201,6 +235,37 @@ class HistoryStore {
     return this.db.prepare(`SELECT id, role, content, token_est FROM turns WHERE id IN (${ph})`).all(...ids);
   }
 
+  // ─── Foresights ───────────────────────────────────────────────────────────
+
+  insertForesight(sessionKey, turnId, intention, target, timeframe, confidence) {
+    const tf = TIMEFRAMES.includes(timeframe) ? timeframe : 'soon';
+    return this.db.prepare(`
+      INSERT INTO foresights (session_key, turn_id, intention, target, timeframe, confidence)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).run(sessionKey, turnId, intention, target || '', tf, confidence).lastInsertRowid;
+  }
+
+  getActiveForesights(sessionKey, limit = 10) {
+    return this.db.prepare(`
+      SELECT id, intention, target, timeframe, confidence, created_at
+      FROM foresights
+      WHERE session_key=? AND fulfilled=0
+      ORDER BY created_at DESC LIMIT ?
+    `).all(sessionKey, limit);
+  }
+
+  markForesightFulfilled(id) {
+    this.db.prepare('UPDATE foresights SET fulfilled=1 WHERE id=?').run(id);
+  }
+
+  // Mark foresights fulfilled when newer ones with same target appear
+  deduplicateForesights(sessionKey, intention) {
+    // If the same intention appears again, older ones are implicitly still active
+    // Only mark fulfilled if we detect completion language (done in proxy/extractor)
+  }
+
+  // ─── Shared ───────────────────────────────────────────────────────────────
+
   static toFloat32(blob) {
     if (!blob) return null;
     return new Float32Array(blob.buffer, blob.byteOffset, blob.byteLength / 4);
@@ -213,7 +278,12 @@ class HistoryStore {
 
   stats(sessionKey) {
     const q = k => this.db.prepare(`SELECT COUNT(*) as n FROM ${k} WHERE session_key=?`).get(sessionKey).n;
-    return { turns: q('turns'), cells: q('memcells'), scenes: q('memscenes') };
+    return {
+      turns:      q('turns'),
+      cells:      q('memcells'),
+      scenes:     q('memscenes'),
+      foresights: this.db.prepare(`SELECT COUNT(*) as n FROM foresights WHERE session_key=? AND fulfilled=0`).get(sessionKey).n
+    };
   }
 }
 

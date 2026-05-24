@@ -40,12 +40,13 @@
     "model": "nomic-embed-cpu:latest"
   },
   "extraction": {
-    "model": "qwen2.5:0.5b",
+    "model": "qwen3:0.6b",
     "_modelGuide": {
       "gemma3:1b": "0.8GB \u2014 fastest, good enough for simple fact extraction",
       "gemma4:e2b": "7.2GB \u2014 better quality, slower cold start",
       "qwen2.5:0.5b": "0.4GB \u2014 smallest, use if VRAM is tight",
-      "gemma3:4b": "2.5GB \u2014 balanced quality/speed"
+      "gemma3:4b": "2.5GB \u2014 balanced quality/speed",
+      "qwen3:0.6b": "0.5GB \u2014 fast, clean JSON via /api/chat think:false, ~140 t/s"
     },
     "maxRetries": 2,
     "timeoutMs": 45000,
@@ -69,5 +70,12 @@
   "history": {
     "dbPath": "/home/fleabag/.anamnesis/history.db",
     "maxAgeDays": 90
+  },
+  "foresight": {
+    "model": "qwen3:0.6b",
+    "maxRetries": 2,
+    "timeoutMs": 45000,
+    "startupBacklogLimit": 200,
+    "_note": "Future-intention extractor. Runs in parallel with memcell extraction."
   }
 }

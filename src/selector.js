@@ -48,8 +48,9 @@ class Selector {
     // Load scenes once — used by both injection and rotation
     const scenes = this.history.getScenes(sessionKey);
 
-    // ─── Stage 1: Build memory injection block ───────────────────────────────
-    const enrichedSystem = this._buildSystemWithMemory(systemMsgs, scenes, queryVec);
+    // ─── Stage 1: Build memory + foresight injection block ───────────────────
+    const foresights     = this.history.getActiveForesights(sessionKey, 3);
+    const enrichedSystem = this._buildSystemWithMemory(systemMsgs, scenes, queryVec, foresights);
 
     // ─── Budget accounting ────────────────────────────────────────────────────
     const systemTokens  = this._est(enrichedSystem, charsPerToken);
@@ -69,7 +70,7 @@ class Selector {
     const stats = this.history.stats(sessionKey);
     console.log(
       `[selector] session=${sessionKey.slice(0,8)} ` +
-      `turns=${stats.turns} cells=${stats.cells} scenes=${stats.scenes} ` +
+      `turns=${stats.turns} cells=${stats.cells} scenes=${stats.scenes} foresights=${stats.foresights} ` +
       `injected=${enrichedSystem.length > systemMsgs.length ? 'yes' : 'no'} ` +
       `rotating=${rotatingMsgs.length} recency=${recencyMsgs.length}`
     );
@@ -78,42 +79,55 @@ class Selector {
   }
 
   /**
-   * Append a <memory> block to the last system message.
+   * Append a <memory> block (and optional <foresight> block) to the last system message.
    * Only includes scenes above the similarity threshold, so irrelevant
    * memories are never injected (preventing the "skiptracer" problem).
    */
-  _buildSystemWithMemory(systemMsgs, scenes, queryVec) {
-    if (!scenes.length || !queryVec) return systemMsgs;
+  _buildSystemWithMemory(systemMsgs, scenes, queryVec, foresights = []) {
+    const hasMemory    = scenes.length > 0 && queryVec;
+    const hasForesight = foresights.length > 0;
+    if (!hasMemory && !hasForesight) return systemMsgs;
 
-    // Score and filter scenes
-    const relevant = scenes
-      .map(s => {
-        const sVec = HistoryStore.toFloat32(s.embedding);
-        const sim  = sVec ? Embedder.cosine(queryVec, sVec) : 0;
-        return { ...s, sim };
-      })
-      .filter(s => s.sim >= INJECTION_MIN_SIM)
-      .sort((a, b) => b.sim - a.sim)
-      .slice(0, INJECTION_SCENES);
+    let injection = '';
 
-    if (!relevant.length) return systemMsgs;
+    // ─── Memory block ────────────────────────────────────────────────────────
+    if (hasMemory) {
+      const relevant = scenes
+        .map(s => {
+          const sVec = HistoryStore.toFloat32(s.embedding);
+          const sim  = sVec ? Embedder.cosine(queryVec, sVec) : 0;
+          return { ...s, sim };
+        })
+        .filter(s => s.sim >= INJECTION_MIN_SIM)
+        .sort((a, b) => b.sim - a.sim)
+        .slice(0, INJECTION_SCENES);
 
-    // Build compact memory block
-    const memLines = relevant.map(s =>
-      `• [${s.title}] ${s.summary}`
-    ).join('\n');
+      if (relevant.length) {
+        const memLines = relevant.map(s => `• [${s.title}] ${s.summary}`).join('\n');
+        injection += `\n\n<memory>\nRelevant context from previous sessions:\n${memLines}\n</memory>`;
+      }
+    }
 
-    const memBlock = `\n\n<memory>\nRelevant context from previous sessions:\n${memLines}\n</memory>`;
+    // ─── Foresight block ─────────────────────────────────────────────────────
+    if (hasForesight) {
+      const fLines = foresights.map(f => {
+        const tag = f.target ? ` (${f.target})` : '';
+        return `• [${f.timeframe}]${tag} ${f.intention}`;
+      }).join('\n');
+      injection += `\n\n<foresight>\nPending intentions from recent context:\n${fLines}\n</foresight>`;
+    }
+
+    if (!injection) return systemMsgs;
 
     // Append to the last system message (or create one if none exist)
     if (systemMsgs.length === 0) {
-      return [{ role: 'system', content: memBlock.trim() }];
+      return [{ role: 'system', content: injection.trim() }];
     }
 
     const enriched = [...systemMsgs];
     enriched[enriched.length - 1] = {
       ...enriched[enriched.length - 1],
-      content: enriched[enriched.length - 1].content + memBlock
+      content: enriched[enriched.length - 1].content + injection
     };
     return enriched;
   }
