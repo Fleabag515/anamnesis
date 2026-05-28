@@ -119,5 +119,62 @@
       "maxProfileChars": 700,
       "_note": "Max characters for the <character> block (not counting evolution/drift lines)."
     }
+  },
+  "cognitive": {
+    "lessons": {
+      "enabled": true,
+      "distillationIntervalMs": 600000,
+      "minScenesPerLesson": 3,
+      "lessonClusterThreshold": 0.78,
+      "lessonRefuteThreshold": 3,
+      "decayHalfLifeDaysBase": 90,
+      "lessonIdleRetireDays": 60,
+      "model": "qwen3:0.6b"
+    },
+    "reward": {
+      "enabled": false,
+      "_phaseNote": "Phase γ flips reward.enabled=true. 1.0 flips writebackLegacyImportance=true.",
+      "weights": { "echo": 0.6, "correction": 0.25, "foresight": 0.15 },
+      "smoothing": 0.1,
+      "meanReversion": 0.002,
+      "writebackLegacyImportance": false
+    },
+    "selector": {
+      "intent": { "mode": "heuristic" },
+      "explorationWeight": 0.05,
+      "allocations": {
+        "_note": "Phase α/β uniform baseline. γ replaces these from bench.",
+        "broad": { "lessons": 0.25, "scenes": 0.25, "memcells": 0.25, "turns": 0.25 },
+        "narrow": { "lessons": 0.25, "scenes": 0.25, "memcells": 0.25, "turns": 0.25 },
+        "reflective": { "lessons": 0.25, "scenes": 0.25, "memcells": 0.25, "turns": 0.25 }
+      }
+    },
+    "scaffold": {
+      "_note": "Reasoning scaffold — tier classification + plan + tool-reflection. Critique deferred.",
+      "trivialEnabled": true,
+      "trivialMaxChars": 80,
+      "trivialMarkers": [
+        "ok",
+        "okay",
+        "k",
+        "thanks",
+        "thank you",
+        "cool",
+        "nice",
+        "lol",
+        "haha",
+        "yes",
+        "no",
+        "sure",
+        "got it"
+      ],
+      "plan": {
+        "enabled": true,
+        "skipOnIntent": ["broad"]
+      },
+      "toolReflection": {
+        "enabled": true
+      }
+    }
   }
 }
