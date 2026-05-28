@@ -58,6 +58,57 @@ maybeTest('schema: init creates expected tables and columns', () => {
   }
 });
 
+maybeTest('schema: lessons table exists with all v0.5.0 columns', () => {
+  const { dir, dbPath } = tmpDb();
+  const h = new HistoryStore(dbPath);
+  try {
+    const cols = h.db
+      .prepare('PRAGMA table_info(lessons)')
+      .all()
+      .map((c) => c.name);
+    const expected = [
+      'id',
+      'session_key',
+      'content',
+      'embedding',
+      'embedding_model',
+      'category',
+      'confidence',
+      'supporting_scene_ids',
+      'supporting_memcell_ids',
+      'refute_count',
+      'precision_score',
+      'recall_count',
+      'last_recalled_at',
+      'last_validated_at',
+      'created_at',
+      'updated_at',
+      'status',
+      'superseded_by',
+    ];
+    for (const c of expected) {
+      assert.ok(cols.includes(c), `lessons.${c} must exist (got ${cols.join(',')})`);
+    }
+  } finally {
+    h.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+maybeTest('schema: memscenes.injection_score exists with default 0.5', () => {
+  const { dir, dbPath } = tmpDb();
+  const h = new HistoryStore(dbPath);
+  try {
+    const cols = h.db.prepare('PRAGMA table_info(memscenes)').all();
+    const col = cols.find((c) => c.name === 'injection_score');
+    assert.ok(col, 'memscenes.injection_score must exist');
+    assert.equal(col.dflt_value, '0.5');
+  } finally {
+    h.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 maybeTest('foresight_scanned is independent of extracted', () => {
   const { dir, dbPath } = tmpDb();
   const h = new HistoryStore(dbPath);
