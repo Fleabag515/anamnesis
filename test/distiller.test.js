@@ -157,3 +157,29 @@ test('Distiller.distillCluster: invalid category → coerces to "other"', async 
   assert.equal(inserts.length, 1);
   assert.equal(inserts[0].category, 'other');
 });
+
+// Task 10: pin LESSON_PROMPT byte-identical to spec §5.3
+const fs = require('node:fs');
+const path = require('node:path');
+
+test('LESSON_PROMPT: byte-identical to spec §5.3', () => {
+  const { LESSON_PROMPT } = require('../src/distiller.js');
+  const specPath = path.join(
+    __dirname,
+    '..',
+    'docs',
+    'specs',
+    '2026-05-24-cognitive-loop-design.md'
+  );
+  const spec = fs.readFileSync(specPath, 'utf8');
+  const m = spec.match(
+    /LESSON_PROMPT \(verbatim, pinned for v0\.5\.0\)\s*\n+\s*```\n([\s\S]*?)\n```/
+  );
+  assert.ok(m, 'spec must contain the LESSON_PROMPT fenced block');
+  const norm = (s) => s.replace(/\s+$/, '');
+  assert.equal(
+    norm(LESSON_PROMPT),
+    norm(m[1]),
+    'LESSON_PROMPT in distiller.js has drifted from spec §5.3'
+  );
+});
