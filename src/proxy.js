@@ -44,6 +44,7 @@ const Extractor = require('./extractor.js');
 const ForesightExtractor = require('./foresight.js');
 const PersonaManager = require('./persona.js');
 const Consolidator = require('./consolidator.js');
+const Distiller = require('./distiller.js');
 const scaffold = require('./scaffold.js');
 
 function loadConfig() {
@@ -59,6 +60,7 @@ async function start(config = loadConfig()) {
   const extractor = new Extractor(config, history, embedder);
   const foresightExtractor = new ForesightExtractor(config, history);
   const consolidator = new Consolidator(config, history, embedder);
+  const distiller = new Distiller(config, history, embedder);
 
   const scaffoldCfg = (config.cognitive && config.cognitive.scaffold) || {
     trivialEnabled: true,
@@ -76,6 +78,10 @@ async function start(config = loadConfig()) {
   foresightExtractor.processBacklog().catch((e) => log.warn('backlog (foresight):', e.message));
 
   consolidator.start(config.memory.consolidationIntervalMs);
+
+  if (config.cognitive?.lessons?.enabled) {
+    distiller.start(config.cognitive.lessons.distillationIntervalMs ?? 600_000);
+  }
 
   // ─── Upstream wiring ──────────────────────────────────────────────────────
 
@@ -355,6 +361,7 @@ async function start(config = loadConfig()) {
     shuttingDown = true;
     log.info(`received ${signal}, shutting down gracefully...`);
     consolidator.stop();
+    distiller.stop();
     server.close();
     await Promise.all([extractor.flushInFlight(), foresightExtractor.flushInFlight()]);
     try {
