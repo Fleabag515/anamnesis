@@ -132,6 +132,8 @@ CI (`.github/workflows/ci.yml`) runs the same on every push.
 
 - [x] Streaming response storage (SSE pass-through + delta accumulation)
 - [x] Foresight signals (predict likely future context needs)
+- [x] Cognitive Loop α — lessons tier + reasoning scaffold (see [docs/specs/2026-05-24-cognitive-loop-design.md](docs/specs/2026-05-24-cognitive-loop-design.md))
+- [ ] Cognitive Loop β/γ/1.0 — lesson injection, reward signal, hierarchical selector
 - [ ] Cross-session scene merging
 - [ ] Client plugin wrapper
 - [ ] Web UI for browsing the memory graph

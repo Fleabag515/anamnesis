@@ -4,6 +4,33 @@ All notable changes to this project are documented in this file.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0-alpha] — Unreleased
+
+### Added (Phase α of Cognitive Loop — spec §12)
+
+- `lessons` table + `memscenes.injection_score` column. Migration is
+  additive; v0.4.0 DBs upgrade cleanly.
+- `src/distiller.js` — background job that distils clusters of related
+  scenes into generalised lessons. Silent population in α; no injection
+  yet. LESSON_PROMPT pinned byte-identical to spec §5.3.
+- `src/scaffold.js` — reasoning scaffold module: `isTrivial` (tier
+  classification), `planBlock` (plan injection), `toolReflectionBlock`
+  (post-tool-result reflection). Salvaged from the reasoning-proxy
+  postmortem without re-enabling Qwen3 extended thinking.
+- `cognitive.{lessons,reward,selector,scaffold}` config blocks.
+  Phase-α-active keys: `cognitive.lessons.*` and `cognitive.scaffold.*`.
+- Status endpoint adds `lessons` and `lessons_active` fields.
+- Tests: `scaffold.test.js`, `distiller.test.js`,
+  `test/integration/scaffold-gate.test.js`,
+  `test/integration/status-endpoint.test.js`,
+  `test/integration/v04-compat.test.js`.
+
+### Compatibility
+
+- v0.4.0 `config.json` (no `cognitive.*` block) boots unchanged.
+- v0.4.0 DB schema migrates additively. No column or table is removed
+  or has its type changed (§15).
+
 ## [0.3.0] — Unreleased
 
 ### Fixed
