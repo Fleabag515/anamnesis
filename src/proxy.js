@@ -197,6 +197,8 @@ async function start(config = loadConfig()) {
         JSON.stringify({
           status: 'ok',
           ...stats,
+          lessons: history.countLessons(),
+          lessons_active: history.countActiveLessons(),
           upstream: config.upstream.baseUrl,
           embedding_model: config.embedding.model,
         })
