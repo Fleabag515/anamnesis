@@ -415,6 +415,27 @@ class HistoryStore {
       .all(sessionKey);
   }
 
+  getScenesForDistillation(sessionKey) {
+    return this.db
+      .prepare(
+        `
+      SELECT id, title, summary, embedding, embedding_model,
+             memcell_ids, avg_importance, updated_at
+      FROM memscenes
+      WHERE session_key=?
+      ORDER BY updated_at DESC
+    `
+      )
+      .all(sessionKey);
+  }
+
+  getActiveSessions() {
+    return this.db
+      .prepare('SELECT DISTINCT session_key FROM memscenes')
+      .all()
+      .map((r) => r.session_key);
+  }
+
   bumpSceneRecall(id) {
     this.db.prepare('UPDATE memscenes SET recall_count=recall_count+1 WHERE id=?').run(id);
   }

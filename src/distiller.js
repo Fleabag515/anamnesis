@@ -105,11 +105,113 @@ class Distiller {
   }
 
   /**
-   * Actual distillation pass body. Empty in the skeleton — populated in
-   * Task 9 with the cluster + persist logic.
+   * Actual distillation pass body. Per spec §5.3:
+   *   1. For each active session, fetch scenes for distillation.
+   *   2. Greedily cluster by lessonClusterThreshold (cosine).
+   *   3. For each cluster ≥ minScenesPerLesson, call the LLM and persist.
    */
   async _runOnce() {
-    // populated in Task 9
+    if (!this.cfg.enabled) return;
+    if (!this.history?.getActiveSessions) return; // wiring not complete
+
+    const minSize = this.cfg.minScenesPerLesson ?? 3;
+    const threshold = this.cfg.lessonClusterThreshold ?? 0.78;
+
+    for (const sessionKey of this.history.getActiveSessions()) {
+      const scenes = (this.history.getScenesForDistillation?.(sessionKey) || []).filter(
+        (s) => s.embedding && (!s.embedding_model || s.embedding_model === this.embedder.model)
+      );
+      if (scenes.length < minSize) continue;
+
+      const decoded = scenes
+        .map((s) => ({ ...s, vec: HistoryStore.toFloat32(s.embedding) }))
+        .filter((s) => s.vec);
+
+      const assigned = new Set();
+      for (let i = 0; i < decoded.length; i++) {
+        if (assigned.has(i)) continue;
+        const cluster = [decoded[i]];
+        assigned.add(i);
+        for (let j = i + 1; j < decoded.length; j++) {
+          if (assigned.has(j)) continue;
+          if (Embedder.cosine(decoded[i].vec, decoded[j].vec) >= threshold) {
+            cluster.push(decoded[j]);
+            assigned.add(j);
+          }
+        }
+        if (cluster.length < minSize) continue;
+
+        let memcellIds = [];
+        for (const s of cluster) {
+          try {
+            memcellIds = memcellIds.concat(JSON.parse(s.memcell_ids));
+          } catch {
+            // malformed JSON in memcell_ids; skip this scene's contribution
+          }
+        }
+        await this.distillCluster(
+          sessionKey,
+          cluster.map((s) => ({ id: s.id, content: s.summary })),
+          memcellIds
+        );
+      }
+    }
+  }
+
+  /**
+   * Ask the LLM for a single generalised rule from a cluster of related
+   * scenes, validate the response, and persist. Returns the inserted
+   * lesson id, or null when the response was 'NONE' / malformed / below
+   * confidence floor.
+   */
+  async distillCluster(sessionKey, sceneItems, supportingMemcellIds) {
+    if (!sceneItems?.length) return null;
+
+    let text;
+    try {
+      text = await this._callLLM(sceneItems);
+    } catch (err) {
+      log.warn(`session=${sessionKey.slice(0, 8)} LLM error: ${err.message}`);
+      return null;
+    }
+
+    if (!text || /^\s*NONE\s*$/i.test(text)) return null;
+
+    const parsed = tryParseJsonObject(text);
+    if (!parsed?.content || typeof parsed.content !== 'string') return null;
+    if (parsed.content.length < 10 || parsed.content.length > 400) return null;
+
+    const confidence =
+      typeof parsed.confidence === 'number' ? Math.min(1, Math.max(0, parsed.confidence)) : 0.5;
+    if (confidence < 0.5) return null;
+
+    const category = VALID_CATEGORIES.includes(parsed.category) ? parsed.category : 'other';
+    const embedding = await this.embedder.embed(parsed.content).catch(() => null);
+
+    const id = this.history.insertLesson({
+      sessionKey,
+      content: parsed.content,
+      embedding,
+      embeddingModel: this.embedder.model,
+      category,
+      confidence,
+      supportingSceneIds: sceneItems.map((s) => s.id),
+      supportingMemcellIds,
+    });
+    log.info(
+      `session=${sessionKey.slice(0, 8)} new lesson (cat=${category}, conf=${confidence.toFixed(2)})`
+    );
+    return id;
+  }
+
+  async _callLLM(sceneItems) {
+    const factList = sceneItems.map((s, i) => `${i + 1}. ${s.content}`).join('\n');
+    return chat(this.ollamaUrl, {
+      model: this.cfg.model,
+      messages: [{ role: 'user', content: LESSON_PROMPT + factList }],
+      options: { temperature: 0.1, num_predict: 300 },
+      timeoutMs: 45000,
+    });
   }
 }
 
