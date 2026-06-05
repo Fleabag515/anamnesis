@@ -51,3 +51,11 @@ test('routes DELETE', async () => {
   await router.handle(fakeReq('DELETE', '/characters/mark'), res);
   assert.equal(res.body, 'mark');
 });
+
+test('populates req.query from URL query string', async () => {
+  const router = new Router();
+  router.get('/status', (req, res) => res.end(req.query.active));
+  const res = fakeRes();
+  await router.handle(fakeReq('GET', '/status?active=true'), res);
+  assert.equal(res.body, 'true');
+});

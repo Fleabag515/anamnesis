@@ -8,7 +8,9 @@ class Router {
 
   _add(method, path, handler) {
     const keys = [];
-    const src = path.replace(/:([^/]+)/g, (_, k) => { keys.push(k); return '([^/]+)'; });
+    // Escape static segments, then substitute :param placeholders
+    const escaped = path.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const src = escaped.replace(/\\:([a-zA-Z0-9_]+)/g, (_, k) => { keys.push(k); return '([^/]+)'; });
     this._routes.push({ method, re: new RegExp(`^${src}$`), keys, handler });
   }
 
@@ -24,7 +26,14 @@ class Router {
       if (!m) continue;
       req.params = Object.fromEntries(route.keys.map((k, i) => [k, m[i + 1]]));
       req.query  = Object.fromEntries(url.searchParams);
-      await route.handler(req, res);
+      try {
+        await route.handler(req, res);
+      } catch (e) {
+        if (!res.headersSent) {
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'internal server error' }));
+        }
+      }
       return;
     }
     res.writeHead(404, { 'Content-Type': 'application/json' });
