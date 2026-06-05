@@ -80,20 +80,27 @@ test('setActive updates active flag and persists', () => {
   assert.equal(reg2.get('mark').active, true);
 });
 
-test('updatePort updates port and persists', () => {
+test('updatePort updates port and persists to disk', () => {
   const dir = tmpDir();
   const reg = new Registry(path.join(dir, 'registry.json'));
   reg.add({ name: 'mark', port: 8084, active: false });
   reg.updatePort('mark', 8085);
+  // Verify in-memory
   assert.equal(reg.get('mark').port, 8085);
+  // Verify persisted — fresh instance from same file
+  const reg2 = new Registry(path.join(dir, 'registry.json'));
+  assert.equal(reg2.get('mark').port, 8085);
 });
 
-test('remove deletes character', () => {
+test('remove deletes character and persists to disk', () => {
   const dir = tmpDir();
   const reg = new Registry(path.join(dir, 'registry.json'));
   reg.add({ name: 'mark', port: 8084, active: false });
   reg.remove('mark');
   assert.equal(reg.list().length, 0);
+  // Verify persisted
+  const reg2 = new Registry(path.join(dir, 'registry.json'));
+  assert.equal(reg2.list().length, 0);
 });
 
 test('get returns undefined for unknown name', () => {
@@ -381,7 +388,8 @@ function remove(pidPath = DEFAULT_PATH) {
 function isRunning(pidPath = DEFAULT_PATH) {
   const pid = read(pidPath);
   if (!pid) return false;
-  try { process.kill(pid, 0); return true; } catch { return false; }
+  try { process.kill(pid, 0); return true; }
+  catch (e) { return e.code === 'EPERM'; } // EPERM = process exists (wrong user), ESRCH = gone
 }
 
 module.exports = { write, read, remove, isRunning, DEFAULT_PATH };
@@ -451,6 +459,14 @@ test('routes POST separately from GET', async () => {
   const res = fakeRes();
   await router.handle(fakeReq('POST', '/x'), res);
   assert.equal(res.body, 'post');
+});
+
+test('routes DELETE', async () => {
+  const router = new Router();
+  router.delete('/characters/:name', (req, res) => res.end(req.params.name));
+  const res = fakeRes();
+  await router.handle(fakeReq('DELETE', '/characters/mark'), res);
+  assert.equal(res.body, 'mark');
 });
 ```
 
@@ -667,12 +683,15 @@ const path = require('path');
 const Registry = require('../src/lib/registry.js');
 const CharacterManager = require('../src/character-manager.js');
 
-function tmpRegistry() {
+// Isolated temp dir for both registry and character files — no ~/.anamnesis/ writes
+function tmpSetup() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'anamnesis-mgr-'));
-  return new Registry(path.join(dir, 'registry.json'));
+  const reg = new Registry(path.join(dir, 'registry.json'));
+  const mgr = new CharacterManager(reg, dir); // pass baseDir to avoid writing to real home
+  return { dir, reg, mgr };
 }
 
-function minimalCharConfig(port = 19900) {
+function minimalCharConfig(port = 19900, baseDir = os.tmpdir()) {
   return {
     proxy:     { port, host: '127.0.0.1' },
     upstream:  { baseUrl: 'http://127.0.0.1:9999/v1', apiKey: 'test', disableThinking: false },
@@ -687,48 +706,65 @@ function minimalCharConfig(port = 19900) {
 }
 
 test('createCharacter adds entry to registry', () => {
-  const reg = tmpRegistry();
-  const mgr = new CharacterManager(reg);
-  mgr.createCharacter('mark', minimalCharConfig());
+  const { dir, reg, mgr } = tmpSetup();
+  mgr.createCharacter('mark', minimalCharConfig(19900, dir));
   assert.ok(reg.get('mark'));
   assert.equal(reg.get('mark').name, 'mark');
 });
 
 test('createCharacter rejects duplicate names', () => {
-  const reg = tmpRegistry();
-  const mgr = new CharacterManager(reg);
-  mgr.createCharacter('mark', minimalCharConfig(19901));
-  assert.throws(() => mgr.createCharacter('mark', minimalCharConfig(19902)), /already exists/);
+  const { dir, mgr } = tmpSetup();
+  mgr.createCharacter('mark', minimalCharConfig(19901, dir));
+  assert.throws(() => mgr.createCharacter('mark', minimalCharConfig(19902, dir)), /already exists/);
 });
 
 test('createCharacter rejects invalid names', () => {
-  const reg = tmpRegistry();
-  const mgr = new CharacterManager(reg);
-  assert.throws(() => mgr.createCharacter('my character', minimalCharConfig()), /invalid name/i);
-  assert.throws(() => mgr.createCharacter('../evil', minimalCharConfig()), /invalid name/i);
+  const { dir, mgr } = tmpSetup();
+  assert.throws(() => mgr.createCharacter('my character', minimalCharConfig(19903, dir)), /invalid name/i);
+  assert.throws(() => mgr.createCharacter('../evil', minimalCharConfig(19904, dir)), /invalid name/i);
 });
 
 test('deleteCharacter removes from registry', () => {
-  const reg = tmpRegistry();
-  const mgr = new CharacterManager(reg);
-  mgr.createCharacter('mark', minimalCharConfig());
+  const { dir, reg, mgr } = tmpSetup();
+  mgr.createCharacter('mark', minimalCharConfig(19905, dir));
   mgr.deleteCharacter('mark');
   assert.equal(reg.get('mark'), undefined);
 });
 
-test('listCharacters returns all entries', () => {
-  const reg = tmpRegistry();
-  const mgr = new CharacterManager(reg);
-  mgr.createCharacter('mark', minimalCharConfig(19903));
-  mgr.createCharacter('aria', minimalCharConfig(19904));
-  assert.equal(mgr.listCharacters().length, 2);
+test('deleteCharacter throws when character is active', async () => {
+  const { dir, mgr } = tmpSetup();
+  // We can't actually start a proxy (would need a real upstream), but we can
+  // simulate an active character by injecting into the internal _running map
+  mgr.createCharacter('mark', minimalCharConfig(19906, dir));
+  mgr._running.set('mark', { shutdown: async () => {} }); // fake instance
+  assert.throws(() => mgr.deleteCharacter('mark'), /stop .* before delet/i);
+  mgr._running.delete('mark'); // cleanup
+});
+
+test('listCharacters returns all entries with running flag', () => {
+  const { dir, mgr } = tmpSetup();
+  mgr.createCharacter('mark', minimalCharConfig(19907, dir));
+  mgr.createCharacter('aria', minimalCharConfig(19908, dir));
+  const list = mgr.listCharacters();
+  assert.equal(list.length, 2);
+  assert.equal(list[0].running, false);
 });
 
 test('isActive returns false for stopped character', () => {
-  const reg = tmpRegistry();
-  const mgr = new CharacterManager(reg);
-  mgr.createCharacter('mark', minimalCharConfig());
+  const { dir, mgr } = tmpSetup();
+  mgr.createCharacter('mark', minimalCharConfig(19909, dir));
   assert.equal(mgr.isActive('mark'), false);
+});
+
+test('stopCharacter sets active=false in registry', async () => {
+  const { dir, reg, mgr } = tmpSetup();
+  mgr.createCharacter('mark', minimalCharConfig(19910, dir));
+  // Inject fake running instance
+  mgr._running.set('mark', { shutdown: async () => {} });
+  reg.setActive('mark', true);
+  await mgr.stopCharacter('mark');
+  assert.equal(mgr.isActive('mark'), false);
+  assert.equal(reg.get('mark').active, false);
 });
 ```
 
@@ -752,16 +788,23 @@ const { findFreePort }      = require('./lib/ports.js');
 const log                   = require('./lib/logger.js').make('manager');
 
 const NAME_RE = /^[a-z0-9_-]+$/i;
-const ANAMNESIS_DIR = path.join(os.homedir(), '.anamnesis');
+const DEFAULT_BASE = path.join(os.homedir(), '.anamnesis');
 
 class CharacterManager {
-  constructor(registry) {
-    this._registry = registry;
-    this._running  = new Map(); // name → { server, history, shutdown }
+  /**
+   * @param {Registry} registry
+   * @param {string}   baseDir  — root of ~/.anamnesis/ (injectable for tests)
+   * @param {number}   controlPort — excluded from port suggestions to avoid self-conflict
+   */
+  constructor(registry, baseDir = DEFAULT_BASE, controlPort = 9000) {
+    this._registry    = registry;
+    this._baseDir     = baseDir;
+    this._controlPort = controlPort;
+    this._running     = new Map(); // name → { server, history, shutdown }
   }
 
   _characterDir(name) {
-    return path.join(ANAMNESIS_DIR, 'characters', name);
+    return path.join(this._baseDir, 'characters', name);
   }
 
   _configPath(name) {
@@ -793,7 +836,8 @@ class CharacterManager {
 
     const config = this._loadConfig(name);
     const reserved = this._registry.usedPorts();
-    reserved.delete(entry.port); // own port is not "foreign"
+    reserved.delete(entry.port);          // own port is not "foreign"
+    reserved.add(this._controlPort);      // never steal the control server's port
 
     const freePort = await findFreePort(entry.port, reserved);
     if (freePort !== entry.port) {
@@ -947,6 +991,7 @@ function createControlServer(manager, daemonStartedAt) {
   // POST /characters/:name/start
   router.post('/characters/:name/start', async (req, res) => {
     const { name } = req.params;
+    if (!manager.getCharacter(name)) return json(res, 404, { error: `character '${name}' not found` });
     try {
       const port = await manager.startCharacter(name);
       json(res, 200, { name, port });
@@ -958,6 +1003,7 @@ function createControlServer(manager, daemonStartedAt) {
   // POST /characters/:name/stop
   router.post('/characters/:name/stop', async (req, res) => {
     const { name } = req.params;
+    if (!manager.getCharacter(name)) return json(res, 404, { error: `character '${name}' not found` });
     try {
       await manager.stopCharacter(name);
       json(res, 200, { name, stopped: true });
@@ -1052,7 +1098,7 @@ async function main() {
   const startedAt     = Date.now();
 
   const registry = new Registry(REGISTRY_PATH);
-  const manager  = new CharacterManager(registry);
+  const manager  = new CharacterManager(registry, ANAMNESIS_DIR, controlPort);
 
   const controlServer = createControlServer(manager, startedAt);
 
@@ -1070,7 +1116,8 @@ async function main() {
   async function shutdown(signal) {
     log.info(`received ${signal}, shutting down...`);
     await manager.stopAll();
-    controlServer.close();
+    // Wait for control server to finish draining in-flight requests before exiting
+    await new Promise(resolve => controlServer.close(resolve));
     pid.remove();
     log.info('shutdown complete');
     process.exit(0);
@@ -1217,7 +1264,7 @@ git commit -m "feat: add control API client for CLI→daemon communication"
 
 const { execFileSync, spawn } = require('child_process');
 const path = require('path');
-const os   = require('fs');
+const os   = require('os');
 const fs   = require('fs');
 const pid  = require('./lib/pid.js');
 const client = require('./lib/client.js');
