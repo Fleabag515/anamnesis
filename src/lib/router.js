@@ -8,9 +8,17 @@ class Router {
 
   _add(method, path, handler) {
     const keys = [];
-    // Escape static segments, then substitute :param placeholders
-    const escaped = path.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    const src = escaped.replace(/\\:([a-zA-Z0-9_]+)/g, (_, k) => { keys.push(k); return '([^/]+)'; });
+    // Escape static segments per-slash-separated-part, substitute :param
+    const src = path
+      .split('/')
+      .map(seg => {
+        if (seg.startsWith(':')) {
+          keys.push(seg.slice(1));
+          return '([^/]+)';
+        }
+        return seg.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      })
+      .join('/');
     this._routes.push({ method, re: new RegExp(`^${src}$`), keys, handler });
   }
 
