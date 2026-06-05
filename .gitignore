@@ -29,3 +29,4 @@ build/
 *.swo
 .DS_Store
 Thumbs.db
+config.json
