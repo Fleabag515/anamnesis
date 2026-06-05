@@ -25,7 +25,7 @@ const log = require('./lib/logger.js').make('persona');
 
 // Default SOUL.md search paths for OpenClaw auto-detection
 const OPENCLAW_DEFAULT_PATHS = [
-  '~/.openclaw/Mark/SOUL.md',
+  '~/.openclaw/SOUL.md',
   '~/.openclaw/*/SOUL.md', // glob placeholder — expanded below
 ];
 

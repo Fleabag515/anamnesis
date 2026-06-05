@@ -2,6 +2,8 @@
 
 _From Greek ἀνάμνησις — the deep recollection of what the mind already knows._
 
+A self-organizing memory proxy for LLM agents. Anamnesis sits between any OpenAI-compatible client and any OpenAI-compatible backend, giving the model persistent, structured, intelligently-retrieved memory across unlimited context and sessions. Run multiple characters, each with their own isolated memories, all managed from a single CLI.
+
 ## Install
 
 **Linux / macOS:**
@@ -22,42 +24,70 @@ irm https://raw.githubusercontent.com/Fleabag515/anamnesis/main/install.ps1 | ie
 npm install -g anamnesis
 ```
 
-Then create your first character:
+> If `anamnesis` isn't found after install, open a new terminal or add `~/.local/bin` to your PATH.
+
+## Quick Start
 
 ```bash
+# Create your first character (interactive wizard)
 anamnesis new
+
+# Start it
+anamnesis start mycharacter
+
+# Point your OpenAI-compatible client at the port shown
+# e.g. http://127.0.0.1:8084/v1
 ```
 
----
+That's it. Anamnesis runs as a background daemon and starts automatically when you use any CLI command.
 
-A self-organizing memory proxy for LLM agents. Inspired by EverMemOS-style
-hierarchical memory (turn → memcell → memscene) with explicit foresight
-extraction, Anamnesis sits between any OpenAI-compatible client and any
-OpenAI-compatible backend and gives the model persistent, structured,
-intelligently-retrieved memory across unlimited context and sessions.
+## CLI Reference
+
+```
+anamnesis new                   Create a new character (interactive wizard)
+anamnesis list                  List all characters and their status
+anamnesis start <name>          Start a character's proxy
+anamnesis stop <name>           Stop a character's proxy
+anamnesis restart <name>        Restart a character's proxy
+anamnesis status                Show daemon status and active characters
+anamnesis show <name>           Show character config
+anamnesis edit <name>           Edit character settings (interactive)
+anamnesis remove <name>         Delete a character and its data
+anamnesis import <name> <file>  Import memories from a file
+anamnesis logs [name]           Tail logs
+anamnesis install               Register as a system service (auto-start on boot)
+anamnesis uninstall             Remove the system service
+anamnesis update                Check for updates and install if available
+anamnesis --help                Show this list
+```
 
 ## Architecture
 
 ```
-client ──→ Anamnesis :8084 ──→ llama-server / Ollama / OpenAI / …
-              │
-              ├── turns       (raw episodic trace, SQLite)
-              ├── memcells    (atomic facts extracted by LLM)
-              ├── memscenes   (thematic clusters, self-organizing)
-              ├── foresights  (extracted future intentions)
-              └── decay       (intelligent forgetting via score decay)
+anamnesis daemon (port 9000 — control API)
+    │
+    ├── character "alice"  → proxy on :8084 → upstream LLM
+    ├── character "bob"    → proxy on :8085 → upstream LLM
+    └── character "..."    → proxy on :...  → upstream LLM
 ```
+
+Each character is a fully independent proxy with its own:
+
+- `~/.anamnesis/characters/<name>/config.json` — settings
+- `~/.anamnesis/characters/<name>/history.db` — SQLite memory store
+
+A registry at `~/.anamnesis/registry.json` tracks all characters and their ports.
 
 ### Memory pipeline
 
 ```
 Turn received
     │
-    ├─→ Store raw turn + embedding (sync, survives crashes)
+    ├─→ Store raw turn + embedding (sync, crash-safe)
     │
-    └─→ [background] MemCell extraction       (extracted flag)
+    └─→ [background] MemCell extraction
               │
-              ├─→ Foresight scan in parallel  (foresight_scanned flag)
+              ├─→ Foresight scan in parallel
               │
               └─→ [periodic] MemScene consolidation
                       │
@@ -71,15 +101,15 @@ Query embedding
     │
     ├─→ Score all MemScenes by cosine similarity
     │       └─→ Expand top scenes → constituent turn IDs
-    │               └─→ Rank by sim + importance, fill budget
+    │               └─→ Rank by similarity + importance, fill token budget
     │
     └─→ Fallback: raw turn similarity (no scenes yet)
 
-Final context window:
+Context injected:
   [ system + <memory> + <foresight> ] + [ rotating relevant turns ] + [ last N turns verbatim ]
 ```
 
-## What makes this different from a sliding window
+### Why not just a sliding window?
 
 |                       | Sliding window      | Anamnesis                               |
 | --------------------- | ------------------- | --------------------------------------- |
@@ -90,79 +120,107 @@ Final context window:
 | Background processing | None                | MemCell + Foresight extraction          |
 | Streaming             | Native              | Native SSE pass-through                 |
 
-## Install
+## Importing Memories
+
+The `import` command accepts files in several formats — Anamnesis will auto-detect the format and use an LLM to extract structured memories:
 
 ```bash
-sudo bash install.sh
+anamnesis import mycharacter /path/to/chatlog.txt
+anamnesis import mycharacter /path/to/export.json
 ```
 
-This installs an `anamnesis.service` systemd unit and starts it on port 8084.
-Point your OpenAI-compatible client's `baseUrl` at `http://127.0.0.1:8084/v1`.
+Supported formats: plain text, SillyTavern exports, Character.AI exports, Odysseus exports, and prior Anamnesis exports.
 
-For a non-systemd run:
+## Character Config
 
-```bash
-npm install
-node src/proxy.js
-# or, with watch reload:
-npm run dev
+Each character's `config.json` controls its behaviour. Key settings:
+
+| Key                              | Default                  | Description                                                                   |
+| -------------------------------- | ------------------------ | ----------------------------------------------------------------------------- |
+| `proxy.port`                     | auto-assigned            | Port this character listens on                                                |
+| `upstream.baseUrl`               | auto-detected            | Any OpenAI-compatible endpoint                                                |
+| `upstream.apiKey`                | _(blank)_                | Bearer token sent upstream. Empty = pass client's own `Authorization` through |
+| `upstream.disableThinking`       | `true`                   | Suppress thinking tokens for Qwen3-style models                               |
+| `embedding.model`                | `nomic-embed-cpu:latest` | Ollama embedding model                                                        |
+| `extraction.model`               | `qwen3:0.6b`             | Small LLM for memcell extraction                                              |
+| `foresight.model`                | `qwen3:0.6b`             | Small LLM for intention extraction                                            |
+| `context.tokenBudget`            | `50000`                  | Total token budget                                                            |
+| `context.recencyTurns`           | `8`                      | Recent turns always included verbatim                                         |
+| `context.rotatingSlots`          | `6`                      | Additional turns added via scene retrieval                                    |
+| `persona.source.type`            | `auto`                   | `auto` \| `file` \| `inline` \| `disabled`                                    |
+| `memory.consolidationIntervalMs` | `120000`                 | How often scenes are rebuilt                                                  |
+| `memory.sceneClusterThreshold`   | `0.72`                   | Cosine similarity threshold for clustering                                    |
+| `memory.decayPruneThreshold`     | `0.05`                   | Score below which cells are pruned                                            |
+| `history.maxAgeDays`             | `90`                     | Raw turn retention period                                                     |
+
+### Persona
+
+If the character has a persona file (e.g. a SOUL.md or character definition), set:
+
+```json
+"persona": {
+  "source": {
+    "type": "file",
+    "file": { "path": "~/.config/mycharacter/persona.md" }
+  }
+}
 ```
 
-## Config (`config.json`)
+Or paste inline:
 
-| Key                              | Default                             | Description                                                                     |
-| -------------------------------- | ----------------------------------- | ------------------------------------------------------------------------------- |
-| `proxy.port` / `proxy.host`      | `8084` / `127.0.0.1`                | Where Anamnesis listens                                                         |
-| `upstream.baseUrl`               | `http://127.0.0.1:8083`             | Any OpenAI-compatible endpoint                                                  |
-| `upstream.apiKey`                | `localqwen`                         | Bearer token sent upstream. Empty = passthrough of client's own `Authorization` |
-| `upstream.disableThinking`       | `true`                              | Inject `chat_template_kwargs:{enable_thinking:false}` for Qwen3-style models    |
-| `embedding.ollamaUrl` / `.model` | `:11434` / `nomic-embed-cpu:latest` | Ollama embedding endpoint                                                       |
-| `extraction.model`               | `qwen3:0.6b`                        | Small LLM for memcell extraction                                                |
-| `foresight.model`                | `qwen3:0.6b`                        | Small LLM for intention extraction                                              |
-| `context.tokenBudget`            | `65536`                             | Total token budget given to upstream                                            |
-| `context.recencyTurns`           | `8`                                 | Turn pairs always in context, verbatim                                          |
-| `context.rotatingSlots`          | `6`                                 | Old turns added via scene retrieval                                             |
-| `memory.consolidationIntervalMs` | `120000`                            | How often scenes are rebuilt                                                    |
-| `memory.sceneClusterThreshold`   | `0.72`                              | Cosine sim threshold for clustering                                             |
-| `memory.decayPruneThreshold`     | `0.05`                              | Score below which non-critical cells are pruned                                 |
-| `history.dbPath`                 | `~/.anamnesis/history.db`           | SQLite path; supports `~`, `$HOME`, `${HOME}`                                   |
-| `history.maxAgeDays`             | `90`                                | Raw turn retention                                                              |
+```json
+"persona": {
+  "source": {
+    "type": "inline",
+    "inline": { "content": "You are ..." }
+  }
+}
+```
 
 ### Environment
 
-| Var             | Values                              | Notes                                                         |
-| --------------- | ----------------------------------- | ------------------------------------------------------------- |
-| `ANAMNESIS_LOG` | `error` / `warn` / `info` / `debug` | Default `info`. `debug` enables per-request selector tracing. |
+| Var             | Values                              | Notes          |
+| --------------- | ----------------------------------- | -------------- |
+| `ANAMNESIS_LOG` | `error` / `warn` / `info` / `debug` | Default `info` |
 
-## Status endpoint
+## Migrating from v0.4
+
+If you had Anamnesis v0.4 installed (single proxy, `~/.anamnesis/history.db`), the daemon auto-migrates on first run: your existing history is imported as a character named `default` and your old systemd unit is disabled.
+
+## Status API
+
+The control server exposes a REST API on `127.0.0.1:9000`:
 
 ```
-GET http://127.0.0.1:8084/anamnesis/status
-→ {
-    "status": "ok",
-    "turns": 142, "cells": 831, "scenes": 24, "foresights": 3,
-    "upstream": "http://127.0.0.1:8083",
-    "embedding_model": "nomic-embed-cpu:latest"
-  }
+GET  /status                    Daemon uptime and active character count
+GET  /characters                List all characters
+GET  /characters/:name          Show a single character
+POST /characters                Create a character
+POST /characters/:name/start    Start a character
+POST /characters/:name/stop     Stop a character
+DELETE /characters/:name        Delete a character
 ```
 
 ## Development
 
 ```bash
-npm test         # node:test suite over pure helpers
-npm run lint     # ESLint flat config
+npm test         # run test suite (node:test)
+npm run lint     # ESLint
 npm run format   # Prettier --write
 ```
 
-CI (`.github/workflows/ci.yml`) runs the same on every push.
+CI runs on every push against Node 18, 20, and 22.
 
 ## Roadmap
 
-- [x] Streaming response storage (SSE pass-through + delta accumulation)
-- [x] Foresight signals (predict likely future context needs)
-- [ ] Cross-session scene merging
-- [ ] Client plugin wrapper
+- [x] Multi-character daemon with isolated memory per character
+- [x] Interactive character creation wizard
+- [x] Universal memory import (text, SillyTavern, Character.AI, Odysseus)
+- [x] One-liner installers (Linux, Windows, npm)
+- [x] v0.4 → v0.5 auto-migration
+- [ ] `anamnesis export` — export character memories to a portable file
 - [ ] Web UI for browsing the memory graph
+- [ ] Cross-session scene merging
 
 ## License
 

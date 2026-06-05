@@ -47,7 +47,7 @@ function migrate(log) {
   } else {
     charConfig = {
       proxy: { port: 8084, host: '127.0.0.1' },
-      upstream: { baseUrl: 'http://127.0.0.1:8083/v1', apiKey: 'localqwen', disableThinking: true },
+      upstream: { baseUrl: 'http://127.0.0.1:8083/v1', apiKey: '', disableThinking: true },
       history: { dbPath: path.join(charDir, 'history.db'), maxAgeDays: 90 },
     };
   }

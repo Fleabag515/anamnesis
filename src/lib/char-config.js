@@ -58,7 +58,7 @@ function buildConfig({
       enabled: true,
       source: {
         type: 'auto',
-        openclaw: { soulPath: '~/.openclaw/Mark/SOUL.md' },
+        openclaw: { soulPath: '~/.openclaw/SOUL.md' },
         file: { path: '~/.anamnesis/character.md' },
         inline: { content: '' },
       },
