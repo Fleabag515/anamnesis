@@ -196,6 +196,45 @@ const commands = {
     const svc = require('./service.js');
     await svc.uninstall();
   },
+
+  async update() {
+    const { execSync } = require('child_process');
+    const INSTALL_DIR = path.join(os.homedir(), '.local', 'share', 'anamnesis');
+
+    // Check current and remote HEAD
+    let current, remote;
+    try {
+      current = execSync('git rev-parse HEAD', { cwd: INSTALL_DIR, encoding: 'utf8' }).trim();
+      remote = execSync('git ls-remote origin HEAD', { cwd: INSTALL_DIR, encoding: 'utf8' })
+        .trim()
+        .split('\t')[0];
+    } catch {
+      console.error('update failed: not a git repo or no network access');
+      process.exit(1);
+    }
+
+    if (current === remote) {
+      console.log('anamnesis is up to date (' + current.slice(0, 7) + ')');
+      return;
+    }
+
+    console.log('update available: ' + current.slice(0, 7) + ' → ' + remote.slice(0, 7));
+    console.log('updating...');
+
+    try {
+      execSync('git pull --ff-only', { cwd: INSTALL_DIR, stdio: 'inherit' });
+      execSync('npm install --omit=dev', { cwd: INSTALL_DIR, stdio: 'inherit' });
+    } catch {
+      console.error(
+        'update failed — try manually: cd ~/.local/share/anamnesis && git pull && npm install --omit=dev'
+      );
+      process.exit(1);
+    }
+
+    console.log(
+      'updated to ' + remote.slice(0, 7) + ' — restart any running daemon: anamnesis restart'
+    );
+  },
 };
 
 // ─── Aliases ──────────────────────────────────────────────────────────────────
@@ -239,6 +278,7 @@ Commands:
   logs [name]           Tail logs
   install               Register anamnesis as a system service
   uninstall             Remove the system service
+  update                Check for updates and install if available
 
 Options:
   -h, --help            Show this help message`);
