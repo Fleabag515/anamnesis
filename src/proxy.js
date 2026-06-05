@@ -318,8 +318,10 @@ async function start(config = loadConfig()) {
     process.exit(0);
   }
 
-  process.on('SIGTERM', () => shutdown('SIGTERM'));
-  process.on('SIGINT', () => shutdown('SIGINT'));
+  if (require.main === module) {
+    process.on('SIGTERM', () => shutdown('SIGTERM'));
+    process.on('SIGINT',  () => shutdown('SIGINT'));
+  }
 
   return { server, history, shutdown };
 }
