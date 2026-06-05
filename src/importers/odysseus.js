@@ -3,11 +3,11 @@
 function extract(buf) {
   const data = JSON.parse(buf.toString('utf8'));
   const memories = data.memories || [];
-  const memcells = memories.map(m => ({
-    content:     m.text,
-    category:    'other',
+  const memcells = memories.map((m) => ({
+    content: m.text,
+    category: 'other',
     decay_score: 1.0,
-    created_at:  m.timestamp || Math.floor(Date.now() / 1000),
+    created_at: m.timestamp || Math.floor(Date.now() / 1000),
     session_key: m.session_id || 'imported',
   }));
   const summary = `${memcells.length} memor${memcells.length === 1 ? 'y' : 'ies'} from Odysseus export`;

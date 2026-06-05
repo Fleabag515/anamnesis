@@ -18,15 +18,31 @@ function tmpSetup() {
 
 function minimalCharConfig(port = 19900, baseDir = os.tmpdir()) {
   return {
-    proxy:     { port, host: '127.0.0.1' },
-    upstream:  { baseUrl: 'http://127.0.0.1:9999/v1', apiKey: 'test', disableThinking: false },
+    proxy: { port, host: '127.0.0.1' },
+    upstream: { baseUrl: 'http://127.0.0.1:9999/v1', apiKey: 'test', disableThinking: false },
     embedding: { ollamaUrl: 'http://127.0.0.1:11434', model: 'nomic-embed-cpu:latest' },
     extraction: { model: 'qwen3:0.6b', maxRetries: 1, timeoutMs: 5000, startupBacklogLimit: 0 },
-    context:   { tokenBudget: 4096, systemReserveTokens: 512, recencyTurns: 4, rotatingSlots: 2, charsPerToken: 3.5, minChunkChars: 50 },
-    memory:    { consolidationIntervalMs: 999999, consolidationBatchSize: 10, sceneClusterThreshold: 0.72, minSceneSize: 2, decayPruneThreshold: 0.05 },
-    history:   { dbPath: path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'anam-hist-')), 'history.db'), maxAgeDays: 30 },
+    context: {
+      tokenBudget: 4096,
+      systemReserveTokens: 512,
+      recencyTurns: 4,
+      rotatingSlots: 2,
+      charsPerToken: 3.5,
+      minChunkChars: 50,
+    },
+    memory: {
+      consolidationIntervalMs: 999999,
+      consolidationBatchSize: 10,
+      sceneClusterThreshold: 0.72,
+      minSceneSize: 2,
+      decayPruneThreshold: 0.05,
+    },
+    history: {
+      dbPath: path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'anam-hist-')), 'history.db'),
+      maxAgeDays: 30,
+    },
     foresight: { model: 'qwen3:0.6b', maxRetries: 1, timeoutMs: 5000, startupBacklogLimit: 0 },
-    persona:   { enabled: false },
+    persona: { enabled: false },
   };
 }
 
@@ -45,8 +61,14 @@ test('createCharacter rejects duplicate names', () => {
 
 test('createCharacter rejects invalid names', () => {
   const { dir, mgr } = tmpSetup();
-  assert.throws(() => mgr.createCharacter('my character', minimalCharConfig(19903, dir)), /invalid name/i);
-  assert.throws(() => mgr.createCharacter('../evil', minimalCharConfig(19904, dir)), /invalid name/i);
+  assert.throws(
+    () => mgr.createCharacter('my character', minimalCharConfig(19903, dir)),
+    /invalid name/i
+  );
+  assert.throws(
+    () => mgr.createCharacter('../evil', minimalCharConfig(19904, dir)),
+    /invalid name/i
+  );
 });
 
 test('deleteCharacter removes from registry', () => {

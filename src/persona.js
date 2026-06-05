@@ -17,16 +17,16 @@
 
 'use strict';
 
-const fs   = require('fs');
+const fs = require('fs');
 const path = require('path');
-const os   = require('os');
+const os = require('os');
 const { chat, tryParseJsonObject } = require('./lib/ollama.js');
-const log  = require('./lib/logger.js').make('persona');
+const log = require('./lib/logger.js').make('persona');
 
 // Default SOUL.md search paths for OpenClaw auto-detection
 const OPENCLAW_DEFAULT_PATHS = [
   '~/.openclaw/Mark/SOUL.md',
-  '~/.openclaw/*/SOUL.md',   // glob placeholder — expanded below
+  '~/.openclaw/*/SOUL.md', // glob placeholder — expanded below
 ];
 
 function expandHome(p) {
@@ -38,7 +38,7 @@ function resolveGlob(pattern) {
   // Simple single-wildcard glob: ~/.openclaw/*/SOUL.md
   const expanded = expandHome(pattern);
   if (!expanded.includes('*')) return fs.existsSync(expanded) ? expanded : null;
-  const dir  = path.dirname(expanded.split('*')[0]);
+  const dir = path.dirname(expanded.split('*')[0]);
   const file = path.basename(expanded);
   try {
     const entries = fs.readdirSync(dir, { withFileTypes: true });
@@ -47,7 +47,9 @@ function resolveGlob(pattern) {
       const candidate = path.join(dir, e.name, file);
       if (fs.existsSync(candidate)) return candidate;
     }
-  } catch { /* dir doesn't exist */ }
+  } catch {
+    /* dir doesn't exist */
+  }
   return null;
 }
 
@@ -93,17 +95,17 @@ CURRENT EVOLUTION NOTES (may be empty):
 
 class PersonaManager {
   constructor(config, history) {
-    this.cfg     = config.persona || {};
-    this.ollama  = config.extraction?.ollamaUrl || 'http://127.0.0.1:11434';
-    this.model   = this.cfg.model || config.extraction?.model || 'qwen3:0.6b';
+    this.cfg = config.persona || {};
+    this.ollama = config.extraction?.ollamaUrl || 'http://127.0.0.1:11434';
+    this.model = this.cfg.model || config.extraction?.model || 'qwen3:0.6b';
     this.history = history;
 
     // Drift tracking: per-session turn counter since last check
-    this._turnCount   = {};   // sessionKey → turns since last drift check
+    this._turnCount = {}; // sessionKey → turns since last drift check
     this._driftActive = false; // set true when in-flight observation running
 
-    this._profile     = null;  // in-memory cache of DB row
-    this._ready       = false;
+    this._profile = null; // in-memory cache of DB row
+    this._ready = false;
     this._initPromise = null;
   }
 
@@ -124,18 +126,19 @@ class PersonaManager {
     if (!this.cfg.enabled || !this._profile) return '';
 
     let summary;
-    try { summary = JSON.parse(this._profile.parsed_summary); }
-    catch { return ''; }
+    try {
+      summary = JSON.parse(this._profile.parsed_summary);
+    } catch {
+      return '';
+    }
 
     const lines = [];
-    if (summary.name)     lines.push(`${summary.name} — ${summary.archetype || ''}`);
-    if (summary.vibe)     lines.push(`Vibe: ${summary.vibe}`);
-    if (summary.style_markers?.length)
-      lines.push(`Style: ${summary.style_markers.join(' · ')}`);
+    if (summary.name) lines.push(`${summary.name} — ${summary.archetype || ''}`);
+    if (summary.vibe) lines.push(`Vibe: ${summary.vibe}`);
+    if (summary.style_markers?.length) lines.push(`Style: ${summary.style_markers.join(' · ')}`);
     if (summary.behavioral_patterns?.length)
       lines.push(`Patterns: ${summary.behavioral_patterns.join('; ')}`);
-    if (summary.relationship)
-      lines.push(`Relationship: ${summary.relationship}`);
+    if (summary.relationship) lines.push(`Relationship: ${summary.relationship}`);
 
     const maxChars = this.cfg.injection?.maxProfileChars ?? 700;
     let block = lines.join('\n').slice(0, maxChars);
@@ -163,7 +166,7 @@ class PersonaManager {
 
     this._turnCount[sessionKey] = 0;
     // Fire-and-forget — never let this crash the proxy
-    this._runDriftCheck(sessionKey, turnId, responseText).catch(err =>
+    this._runDriftCheck(sessionKey, turnId, responseText).catch((err) =>
       log.warn('drift check error:', err.message)
     );
   }
@@ -171,7 +174,10 @@ class PersonaManager {
   // ─── Private: loading & extraction ────────────────────────────────────────
 
   async _load() {
-    if (!this.cfg.enabled) { log.info('persona disabled'); return; }
+    if (!this.cfg.enabled) {
+      log.info('persona disabled');
+      return;
+    }
 
     const { sourceType, sourcePath, rawContent } = this._resolveSource();
     if (!rawContent) {
@@ -181,18 +187,20 @@ class PersonaManager {
 
     // Check if we have a cached profile that's still fresh
     const cached = this.history.getCharacterProfile();
-    const mtime  = sourcePath ? this._mtime(sourcePath) : null;
+    const mtime = sourcePath ? this._mtime(sourcePath) : null;
 
-    const stale = !cached
-      || cached.source_type !== sourceType
-      || (sourcePath && cached.source_path !== sourcePath)
-      || (mtime && cached.source_mtime !== mtime)
-      || !cached.parsed_summary || cached.parsed_summary === '{}';
+    const stale =
+      !cached ||
+      cached.source_type !== sourceType ||
+      (sourcePath && cached.source_path !== sourcePath) ||
+      (mtime && cached.source_mtime !== mtime) ||
+      !cached.parsed_summary ||
+      cached.parsed_summary === '{}';
 
     if (!stale) {
       log.info(`persona: loaded cached profile (source=${sourceType})`);
       this._profile = cached;
-      this._ready   = true;
+      this._ready = true;
       return;
     }
 
@@ -209,12 +217,12 @@ class PersonaManager {
       rawContent,
       parsedSummary: parsedSummary ? JSON.stringify(parsedSummary) : '{}',
       evolutionNotes: cached?.evolution_notes || '',
-      driftReminder:  cached?.drift_reminder  || '',
+      driftReminder: cached?.drift_reminder || '',
       driftCheckedAt: cached?.drift_checked_at || 0,
     });
 
     this._profile = this.history.getCharacterProfile();
-    this._ready   = true;
+    this._ready = true;
     log.info(`persona: profile ready — name="${parsedSummary?.name || '?'}" source=${sourceType}`);
   }
 
@@ -250,18 +258,27 @@ class PersonaManager {
     // 1. Check configured openclaw soulPath
     const configuredSoul = expandHome(src.openclaw?.soulPath);
     if (configuredSoul && fs.existsSync(configuredSoul))
-      return { sourceType: 'openclaw', sourcePath: configuredSoul, rawContent: fs.readFileSync(configuredSoul, 'utf8') };
+      return {
+        sourceType: 'openclaw',
+        sourcePath: configuredSoul,
+        rawContent: fs.readFileSync(configuredSoul, 'utf8'),
+      };
 
     // 2. Try default SOUL.md paths
     for (const pattern of OPENCLAW_DEFAULT_PATHS) {
       const p = resolveGlob(pattern);
-      if (p) return { sourceType: 'openclaw', sourcePath: p, rawContent: fs.readFileSync(p, 'utf8') };
+      if (p)
+        return { sourceType: 'openclaw', sourcePath: p, rawContent: fs.readFileSync(p, 'utf8') };
     }
 
     // 3. Custom file
     const filePath = expandHome(src.file?.path);
     if (filePath && fs.existsSync(filePath))
-      return { sourceType: 'file', sourcePath: filePath, rawContent: fs.readFileSync(filePath, 'utf8') };
+      return {
+        sourceType: 'file',
+        sourcePath: filePath,
+        rawContent: fs.readFileSync(filePath, 'utf8'),
+      };
 
     // 4. Inline content
     if (src.inline?.content)
@@ -272,12 +289,12 @@ class PersonaManager {
 
   async _extractProfile(rawContent) {
     const truncated = rawContent.slice(0, 3000);
-    const prompt    = EXTRACT_PROMPT + truncated;
+    const prompt = EXTRACT_PROMPT + truncated;
     try {
       const text = await chat(this.ollama, {
-        model:   this.model,
+        model: this.model,
         messages: [{ role: 'user', content: prompt }],
-        think:   false,
+        think: false,
         options: { temperature: 0.1, num_predict: 400 },
         timeoutMs: this.cfg.timeoutMs || 45000,
       });
@@ -291,8 +308,11 @@ class PersonaManager {
   }
 
   _mtime(filePath) {
-    try { return Math.floor(fs.statSync(filePath).mtimeMs / 1000); }
-    catch { return null; }
+    try {
+      return Math.floor(fs.statSync(filePath).mtimeMs / 1000);
+    } catch {
+      return null;
+    }
   }
 
   // ─── Private: drift & evolution ───────────────────────────────────────────
@@ -307,10 +327,10 @@ class PersonaManager {
     let result;
     try {
       const text = await chat(this.ollama, {
-        model:    this.model,
+        model: this.model,
         messages: [{ role: 'user', content: prompt }],
-        think:    false,
-        options:  { temperature: 0.1, num_predict: 250 },
+        think: false,
+        options: { temperature: 0.1, num_predict: 250 },
         timeoutMs: this.cfg.timeoutMs || 30000,
       });
       result = tryParseJsonObject(text);
@@ -321,10 +341,10 @@ class PersonaManager {
 
     if (!result) return;
 
-    const threshold  = this.cfg.drift?.driftThreshold ?? 0.55;
+    const threshold = this.cfg.drift?.driftThreshold ?? 0.55;
     const consistent = typeof result.consistent === 'number' ? result.consistent : 1.0;
-    const missing    = Array.isArray(result.missing) ? result.missing : [];
-    const novel      = Array.isArray(result.novel)   ? result.novel   : [];
+    const missing = Array.isArray(result.missing) ? result.missing : [];
+    const novel = Array.isArray(result.novel) ? result.novel : [];
 
     const now = Math.floor(Date.now() / 1000);
 
@@ -333,7 +353,7 @@ class PersonaManager {
       log.info(`persona: drift detected (score=${consistent.toFixed(2)}) — ${reminder}`);
       this.history.insertCharacterObservation(sessionKey, turnId, 'drift', missing.join('; '));
       this.history.upsertCharacterProfile({
-        sourceType:    this._profile.source_type,
+        sourceType: this._profile.source_type,
         driftReminder: reminder,
         driftCheckedAt: now,
       });
@@ -341,7 +361,7 @@ class PersonaManager {
       // Consistent — clear any active drift reminder
       if (this._profile.drift_reminder) {
         this.history.upsertCharacterProfile({
-          sourceType:    this._profile.source_type,
+          sourceType: this._profile.source_type,
           driftReminder: '',
           driftCheckedAt: now,
         });
@@ -363,7 +383,7 @@ class PersonaManager {
       const pending = this.history.countPendingObservations();
       const threshold2 = this.cfg.evolution?.consolidateAfterNObservations ?? 8;
       if (pending >= threshold2) {
-        this._consolidateGrowth().catch(err =>
+        this._consolidateGrowth().catch((err) =>
           log.warn('persona: consolidation error:', err.message)
         );
       }
@@ -374,29 +394,33 @@ class PersonaManager {
     const observations = this.history.getPendingObservations(30);
     if (!observations.length) return;
 
-    const growthObs = observations.filter(o => o.obs_type === 'growth');
+    const growthObs = observations.filter((o) => o.obs_type === 'growth');
     if (!growthObs.length) {
       // No growth to consolidate — just mark drift obs as processed
-      this.history.markObservationsConsolidated(observations.map(o => o.id));
+      this.history.markObservationsConsolidated(observations.map((o) => o.id));
       return;
     }
 
-    const profileText  = this._formatProfileForPrompt();
-    const obsText      = growthObs.map(o => `• ${o.detail}`).join('\n');
+    const profileText = this._formatProfileForPrompt();
+    const obsText = growthObs.map((o) => `• ${o.detail}`).join('\n');
     const currentNotes = this._profile?.evolution_notes || '';
-    const maxChars     = this.cfg.evolution?.maxEvolutionChars ?? 600;
+    const maxChars = this.cfg.evolution?.maxEvolutionChars ?? 600;
 
-    const prompt = EVOLVE_PROMPT + (currentNotes || '(none)') +
-      '\n\nPROFILE:\n' + profileText +
-      '\n\nRECENT GROWTH OBSERVATIONS:\n' + obsText;
+    const prompt =
+      EVOLVE_PROMPT +
+      (currentNotes || '(none)') +
+      '\n\nPROFILE:\n' +
+      profileText +
+      '\n\nRECENT GROWTH OBSERVATIONS:\n' +
+      obsText;
 
     let newNotes;
     try {
       newNotes = await chat(this.ollama, {
-        model:    this.model,
+        model: this.model,
         messages: [{ role: 'user', content: prompt }],
-        think:    false,
-        options:  { temperature: 0.3, num_predict: 200 },
+        think: false,
+        options: { temperature: 0.3, num_predict: 200 },
         timeoutMs: this.cfg.timeoutMs || 45000,
       });
       newNotes = newNotes.trim().slice(0, maxChars);
@@ -408,13 +432,13 @@ class PersonaManager {
     if (newNotes) {
       log.info(`persona: evolution consolidated — "${newNotes.slice(0, 80)}…"`);
       this.history.upsertCharacterProfile({
-        sourceType:     this._profile.source_type,
+        sourceType: this._profile.source_type,
         evolutionNotes: newNotes,
       });
       this._profile = this.history.getCharacterProfile();
     }
 
-    this.history.markObservationsConsolidated(observations.map(o => o.id));
+    this.history.markObservationsConsolidated(observations.map((o) => o.id));
   }
 
   _formatProfileForPrompt() {

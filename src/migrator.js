@@ -1,12 +1,12 @@
 'use strict';
 
-const fs   = require('fs');
+const fs = require('fs');
 const path = require('path');
-const os   = require('os');
+const os = require('os');
 
-const ANAMNESIS_DIR  = path.join(os.homedir(), '.anamnesis');
-const REGISTRY_PATH  = path.join(ANAMNESIS_DIR, 'registry.json');
-const OLD_DB_PATH    = path.join(ANAMNESIS_DIR, 'history.db');
+const ANAMNESIS_DIR = path.join(os.homedir(), '.anamnesis');
+const REGISTRY_PATH = path.join(ANAMNESIS_DIR, 'registry.json');
+const OLD_DB_PATH = path.join(ANAMNESIS_DIR, 'history.db');
 
 function findOldConfig() {
   const candidates = [
@@ -46,27 +46,37 @@ function migrate(log) {
     charConfig.history = { ...charConfig.history, dbPath: path.join(charDir, 'history.db') };
   } else {
     charConfig = {
-      proxy:    { port: 8084, host: '127.0.0.1' },
+      proxy: { port: 8084, host: '127.0.0.1' },
       upstream: { baseUrl: 'http://127.0.0.1:8083/v1', apiKey: 'localqwen', disableThinking: true },
-      history:  { dbPath: path.join(charDir, 'history.db'), maxAgeDays: 90 },
+      history: { dbPath: path.join(charDir, 'history.db'), maxAgeDays: 90 },
     };
   }
 
   fs.writeFileSync(path.join(charDir, 'config.json'), JSON.stringify(charConfig, null, 2));
 
-  const registry = { characters: [{ name: characterName, port: charConfig.proxy?.port || 8084, active: false }] };
+  const registry = {
+    characters: [{ name: characterName, port: charConfig.proxy?.port || 8084, active: false }],
+  };
   fs.writeFileSync(REGISTRY_PATH, JSON.stringify(registry, null, 2));
 
   // Disable legacy systemd unit ONLY if it points to the old proxy.js (not the new daemon.js)
   try {
     const { execSync } = require('child_process');
-    const unitOut = execSync('systemctl cat anamnesis 2>/dev/null || true', { shell: true, encoding: 'utf8' });
+    const unitOut = execSync('systemctl cat anamnesis 2>/dev/null || true', {
+      shell: true,
+      encoding: 'utf8',
+    });
     const isLegacy = unitOut.includes('proxy.js') && !unitOut.includes('daemon.js');
     if (isLegacy) {
-      execSync('systemctl stop anamnesis 2>/dev/null; systemctl disable anamnesis 2>/dev/null; true', { shell: true, stdio: 'pipe' });
+      execSync(
+        'systemctl stop anamnesis 2>/dev/null; systemctl disable anamnesis 2>/dev/null; true',
+        { shell: true, stdio: 'pipe' }
+      );
       log.info('disabled legacy anamnesis.service (was pointing to proxy.js)');
     }
-  } catch { /* not on systemd or already removed */ }
+  } catch {
+    /* not on systemd or already removed */
+  }
 
   log.info(`migration complete — character '${characterName}' created from v0.4 data`);
   log.info(`start it with: anamnesis start ${characterName}`);

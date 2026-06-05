@@ -3,7 +3,7 @@
 
 const net = require('net');
 const BASE_PORT = 8084;
-const MAX_SCAN  = 200;
+const MAX_SCAN = 200;
 
 function isPortFree(port) {
   return new Promise((resolve) => {
@@ -19,7 +19,9 @@ async function findFreePort(preferred = BASE_PORT, reserved = new Set()) {
     if (reserved.has(candidate)) continue;
     if (await isPortFree(candidate)) return candidate;
   }
-  throw new Error(`could not find a free port starting from ${preferred} after ${MAX_SCAN} attempts`);
+  throw new Error(
+    `could not find a free port starting from ${preferred} after ${MAX_SCAN} attempts`
+  );
 }
 
 async function suggestPort(registry) {

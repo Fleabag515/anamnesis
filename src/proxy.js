@@ -42,7 +42,7 @@ const Embedder = require('./embedder.js');
 const Selector = require('./selector.js');
 const Extractor = require('./extractor.js');
 const ForesightExtractor = require('./foresight.js');
-const PersonaManager      = require('./persona.js');
+const PersonaManager = require('./persona.js');
 const Consolidator = require('./consolidator.js');
 
 function loadConfig() {
@@ -52,7 +52,7 @@ function loadConfig() {
 async function start(config = loadConfig()) {
   const history = new HistoryStore(config.history.dbPath);
   const embedder = new Embedder(config.embedding.ollamaUrl, config.embedding.model);
-  const persona  = new PersonaManager(config, history);
+  const persona = new PersonaManager(config, history);
   await persona.init();
   const selector = new Selector(config, history, embedder, persona);
   const extractor = new Extractor(config, history, embedder);
@@ -320,7 +320,7 @@ async function start(config = loadConfig()) {
 
   if (require.main === module) {
     process.on('SIGTERM', () => shutdown('SIGTERM'));
-    process.on('SIGINT',  () => shutdown('SIGINT'));
+    process.on('SIGINT', () => shutdown('SIGINT'));
   }
 
   return { server, history, shutdown };

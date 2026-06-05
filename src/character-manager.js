@@ -1,22 +1,22 @@
 'use strict';
 
-const fs   = require('fs');
+const fs = require('fs');
 const path = require('path');
-const os   = require('os');
+const os = require('os');
 
 const { start: startProxy } = require('./proxy.js');
-const { findFreePort }      = require('./lib/ports.js');
-const log                   = require('./lib/logger.js').make('manager');
+const { findFreePort } = require('./lib/ports.js');
+const log = require('./lib/logger.js').make('manager');
 
 const NAME_RE = /^[a-z0-9_-]+$/i;
 const DEFAULT_BASE = path.join(os.homedir(), '.anamnesis');
 
 class CharacterManager {
   constructor(registry, baseDir = DEFAULT_BASE, controlPort = 9000) {
-    this._registry    = registry;
-    this._baseDir     = baseDir;
+    this._registry = registry;
+    this._baseDir = baseDir;
     this._controlPort = controlPort;
-    this._running     = new Map();
+    this._running = new Map();
   }
 
   _characterDir(name) {
@@ -38,7 +38,8 @@ class CharacterManager {
   }
 
   createCharacter(name, config) {
-    if (!NAME_RE.test(name)) throw new Error(`invalid name '${name}' — use letters, digits, hyphens, underscores only`);
+    if (!NAME_RE.test(name))
+      throw new Error(`invalid name '${name}' — use letters, digits, hyphens, underscores only`);
     if (this._registry.get(name)) throw new Error(`character '${name}' already exists`);
     this._saveConfig(name, config);
     this._registry.add({ name, port: config.proxy.port, active: false });
@@ -88,7 +89,7 @@ class CharacterManager {
   }
 
   listCharacters() {
-    return this._registry.list().map(entry => ({
+    return this._registry.list().map((entry) => ({
       ...entry,
       running: this._running.has(entry.name),
     }));
@@ -107,8 +108,11 @@ class CharacterManager {
   async reactivateAll() {
     for (const entry of this._registry.list()) {
       if (entry.active) {
-        try { await this.startCharacter(entry.name); }
-        catch (e) { log.warn(`failed to reactivate '${entry.name}':`, e.message); }
+        try {
+          await this.startCharacter(entry.name);
+        } catch (e) {
+          log.warn(`failed to reactivate '${entry.name}':`, e.message);
+        }
       }
     }
   }

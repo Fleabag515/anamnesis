@@ -29,7 +29,7 @@ test('detects .txt as text', () => {
 });
 
 test('detects .png as sillytavern', () => {
-  const buf = Buffer.from([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]);
+  const buf = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
   assert.equal(detectFormat('char.png', buf), 'sillytavern');
 });
 

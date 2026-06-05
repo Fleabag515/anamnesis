@@ -23,7 +23,7 @@ test('isPortFree returns false for an occupied port', async () => {
     const free = await isPortFree(19998);
     assert.equal(free, false);
   } finally {
-    await new Promise(r => server.close(r));
+    await new Promise((r) => server.close(r));
   }
 });
 
@@ -38,7 +38,7 @@ test('findFreePort skips occupied ports', async () => {
     const port = await findFreePort(19996, new Set());
     assert.ok(port > 19996);
   } finally {
-    await new Promise(r => server.close(r));
+    await new Promise((r) => server.close(r));
   }
 });
 

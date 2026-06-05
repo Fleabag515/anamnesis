@@ -1,12 +1,13 @@
 // src/lib/registry.js
 'use strict';
 
-const fs   = require('fs');
+const fs = require('fs');
 const path = require('path');
 
 const DEFAULT_PATH = path.join(
   process.env.HOME || require('os').homedir(),
-  '.anamnesis', 'registry.json'
+  '.anamnesis',
+  'registry.json'
 );
 
 class Registry {
@@ -28,8 +29,12 @@ class Registry {
     fs.writeFileSync(this._path, JSON.stringify(this._data, null, 2), 'utf8');
   }
 
-  list() { return this._data.characters; }
-  get(name) { return this._data.characters.find(c => c.name === name); }
+  list() {
+    return this._data.characters;
+  }
+  get(name) {
+    return this._data.characters.find((c) => c.name === name);
+  }
 
   add(entry) {
     if (this.get(entry.name)) throw new Error(`character '${entry.name}' already exists`);
@@ -59,12 +64,12 @@ class Registry {
   }
 
   remove(name) {
-    this._data.characters = this._data.characters.filter(c => c.name !== name);
+    this._data.characters = this._data.characters.filter((c) => c.name !== name);
     this._save();
   }
 
   usedPorts() {
-    return new Set(this._data.characters.map(c => c.port));
+    return new Set(this._data.characters.map((c) => c.port));
   }
 }
 

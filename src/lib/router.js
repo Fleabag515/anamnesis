@@ -11,7 +11,7 @@ class Router {
     // Escape static segments per-slash-separated-part, substitute :param
     const src = path
       .split('/')
-      .map(seg => {
+      .map((seg) => {
         if (seg.startsWith(':')) {
           keys.push(seg.slice(1));
           return '([^/]+)';
@@ -22,9 +22,15 @@ class Router {
     this._routes.push({ method, re: new RegExp(`^${src}$`), keys, handler });
   }
 
-  get(path, handler)    { this._add('GET',    path, handler); }
-  post(path, handler)   { this._add('POST',   path, handler); }
-  delete(path, handler) { this._add('DELETE', path, handler); }
+  get(path, handler) {
+    this._add('GET', path, handler);
+  }
+  post(path, handler) {
+    this._add('POST', path, handler);
+  }
+  delete(path, handler) {
+    this._add('DELETE', path, handler);
+  }
 
   async handle(req, res) {
     const url = new URL(req.url, 'http://localhost');
@@ -33,7 +39,7 @@ class Router {
       const m = url.pathname.match(route.re);
       if (!m) continue;
       req.params = Object.fromEntries(route.keys.map((k, i) => [k, m[i + 1]]));
-      req.query  = Object.fromEntries(url.searchParams);
+      req.query = Object.fromEntries(url.searchParams);
       try {
         await route.handler(req, res);
       } catch (e) {

@@ -2,6 +2,34 @@
 
 _From Greek ἀνάμνησις — the deep recollection of what the mind already knows._
 
+## Install
+
+**Linux / macOS:**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Fleabag515/anamnesis/main/install.sh | bash
+```
+
+**Windows (PowerShell):**
+
+```powershell
+irm https://raw.githubusercontent.com/Fleabag515/anamnesis/main/install.ps1 | iex
+```
+
+**npm (any platform):**
+
+```bash
+npm install -g anamnesis
+```
+
+Then create your first character:
+
+```bash
+anamnesis new
+```
+
+---
+
 A self-organizing memory proxy for LLM agents. Inspired by EverMemOS-style
 hierarchical memory (turn → memcell → memscene) with explicit foresight
 extraction, Anamnesis sits between any OpenAI-compatible client and any

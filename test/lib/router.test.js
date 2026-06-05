@@ -3,12 +3,19 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { Router } = require('../../src/lib/router.js');
 
-function fakeReq(method, url) { return { method, url }; }
+function fakeReq(method, url) {
+  return { method, url };
+}
 
 function fakeRes() {
   const res = { headers: {}, body: null, status: null };
-  res.writeHead = (s, h) => { res.status = s; Object.assign(res.headers, h || {}); };
-  res.end = (b) => { res.body = b; };
+  res.writeHead = (s, h) => {
+    res.status = s;
+    Object.assign(res.headers, h || {});
+  };
+  res.end = (b) => {
+    res.body = b;
+  };
   return res;
 }
 

@@ -32,7 +32,7 @@ class Selector {
     this.cfg = config.context;
     this.history = historyStore;
     this.embedder = embedder;
-    this.persona   = persona;  // PersonaManager instance or null
+    this.persona = persona; // PersonaManager instance or null
   }
 
   async select(sessionKey, incoming) {

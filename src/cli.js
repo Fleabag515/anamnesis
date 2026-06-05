@@ -3,9 +3,9 @@
 
 const { execFileSync, spawn } = require('child_process');
 const path = require('path');
-const os   = require('os');
-const fs   = require('fs');
-const pid  = require('./lib/pid.js');
+const os = require('os');
+const fs = require('fs');
+const pid = require('./lib/pid.js');
 const client = require('./lib/client.js');
 
 const DAEMON_JS = path.join(__dirname, 'daemon.js');
@@ -17,7 +17,9 @@ async function ensureDaemon() {
 
   const managed = isManagedService();
   if (managed) {
-    console.error('daemon not running — start it with: anamnesis\n  or check: systemctl status anamnesis');
+    console.error(
+      'daemon not running — start it with: anamnesis\n  or check: systemctl status anamnesis'
+    );
     process.exit(1);
   }
 
@@ -30,11 +32,13 @@ async function ensureDaemon() {
 
   const deadline = Date.now() + 5000;
   while (Date.now() < deadline) {
-    await new Promise(r => setTimeout(r, 200));
+    await new Promise((r) => setTimeout(r, 200));
     try {
       const res = await client.status();
       if (res.status === 200) return;
-    } catch { /* not ready yet */ }
+    } catch {
+      /* not ready yet */
+    }
   }
   console.error('daemon failed to start — check ~/.anamnesis/daemon.log');
   process.exit(1);
@@ -44,22 +48,32 @@ function isManagedService() {
   try {
     execFileSync('systemctl', ['is-enabled', 'anamnesis'], { stdio: 'pipe' });
     return true;
-  } catch { return false; }
+  } catch {
+    return false;
+  }
 }
 
 // ─── Output helpers ───────────────────────────────────────────────────────────
 
 function printCharacters(characters) {
-  if (!characters.length) { console.log('No characters. Run: anamnesis new'); return; }
+  if (!characters.length) {
+    console.log('No characters. Run: anamnesis new');
+    return;
+  }
   const W = { name: 4, port: 4 };
   for (const c of characters) W.name = Math.max(W.name, c.name.length);
   console.log(`${'NAME'.padEnd(W.name)}  ${'PORT'.padEnd(W.port)}  STATUS`);
   for (const c of characters) {
-    console.log(`${c.name.padEnd(W.name)}  ${String(c.port).padEnd(W.port)}  ${c.running ? 'active' : 'inactive'}`);
+    console.log(
+      `${c.name.padEnd(W.name)}  ${String(c.port).padEnd(W.port)}  ${c.running ? 'active' : 'inactive'}`
+    );
   }
 }
 
-function die(msg) { console.error(`error: ${msg}`); process.exit(1); }
+function die(msg) {
+  console.error(`error: ${msg}`);
+  process.exit(1);
+}
 
 // ─── Commands ─────────────────────────────────────────────────────────────────
 
@@ -118,8 +132,16 @@ const commands = {
     await ensureDaemon();
     if (!yes) {
       const prompts = require('prompts');
-      const { ok } = await prompts({ type: 'confirm', name: 'ok', message: `Delete '${name}' and all its memories?`, initial: false });
-      if (!ok) { console.log('aborted'); return; }
+      const { ok } = await prompts({
+        type: 'confirm',
+        name: 'ok',
+        message: `Delete '${name}' and all its memories?`,
+        initial: false,
+      });
+      if (!ok) {
+        console.log('aborted');
+        return;
+      }
     }
     const r = await client.deleteCharacter(name);
     if (r.status !== 200) die(r.body.error || 'failed to delete');
@@ -131,8 +153,12 @@ const commands = {
     // MVP: tails full daemon journal. Per-character SSE streaming is post-MVP.
     console.log(`(showing all daemon logs — filter for '${name}' manually)\n`);
     try {
-      const child = spawn('journalctl', ['-u', 'anamnesis', '-f', '--no-pager', '-n', '50'], { stdio: 'inherit' });
-      child.on('error', () => console.log('journalctl not available — check ~/.anamnesis/daemon.log'));
+      const child = spawn('journalctl', ['-u', 'anamnesis', '-f', '--no-pager', '-n', '50'], {
+        stdio: 'inherit',
+      });
+      child.on('error', () =>
+        console.log('journalctl not available — check ~/.anamnesis/daemon.log')
+      );
     } catch {
       console.log('check ~/.anamnesis/daemon.log');
     }
@@ -173,22 +199,51 @@ const commands = {
 };
 
 // ─── Aliases ──────────────────────────────────────────────────────────────────
-commands.ls      = commands.list;
-commands.ps      = commands.status;
-commands.run     = commands.start;
-commands.kill    = commands.stop;
-commands.rm      = commands.remove;
+commands.ls = commands.list;
+commands.ps = commands.status;
+commands.run = commands.start;
+commands.kill = commands.stop;
+commands.rm = commands.remove;
 
 // ─── Entry point ─────────────────────────────────────────────────────────────
 
-const [,, cmd, ...args] = process.argv;
+const [, , cmd, ...args] = process.argv;
 
 if (!cmd) {
-  commands.status().catch(e => { console.error(e.message); process.exit(1); });
+  commands.status().catch((e) => {
+    console.error(e.message);
+    process.exit(1);
+  });
 } else if (commands[cmd]) {
-  commands[cmd](args).catch(e => { console.error('error:', e.message); process.exit(1); });
+  commands[cmd](args).catch((e) => {
+    console.error('error:', e.message);
+    process.exit(1);
+  });
+} else if (cmd === '--help' || cmd === '-h' || cmd === 'help') {
+  console.log(`anamnesis — multi-character memory proxy
+
+Usage: anamnesis <command> [options]
+
+Commands:
+  new                   Create a new character (interactive wizard)
+  list, ls              List all characters and their status
+  start <name>          Start a character's proxy
+  stop <name>           Stop a character's proxy
+  restart <name>        Restart a character's proxy
+  status, ps            Show daemon status and active characters
+  show <name>           Show character config
+  edit <name>           Edit character settings (interactive)
+  remove, rm <name>     Delete a character and its data
+  import <name> <file>  Import memories from a file
+  export <name>         Export character memories
+  logs [name]           Tail logs
+  install               Register anamnesis as a system service
+  uninstall             Remove the system service
+
+Options:
+  -h, --help            Show this help message`);
 } else {
   console.error(`unknown command: ${cmd}`);
-  console.error('commands: new, list, start, stop, restart, show, edit, remove, import, export, logs, status, install, uninstall');
+  console.error('run: anamnesis --help   for a list of commands');
   process.exit(1);
 }

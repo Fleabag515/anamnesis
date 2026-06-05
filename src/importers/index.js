@@ -1,40 +1,45 @@
 // src/importers/index.js
 'use strict';
 
-const fs    = require('fs');
-const path  = require('path');
+const fs = require('fs');
+const path = require('path');
 const https = require('https');
-const http  = require('http');
-const os    = require('os');
+const http = require('http');
+const os = require('os');
 
 const { detectFormat } = require('./detect.js');
-const log              = require('../lib/logger.js').make('importer');
+const log = require('../lib/logger.js').make('importer');
 
 const ADAPTERS = {
-  'text':             require('./text.js'),
-  'openclaw':         require('./openclaw.js'),
+  text: require('./text.js'),
+  openclaw: require('./openclaw.js'),
   'anamnesis-export': require('./anamnesis-export.js'),
-  'odysseus':         require('./odysseus.js'),
-  'characterai':      require('./characterai.js'),
-  'sillytavern':      require('./sillytavern.js'),
+  odysseus: require('./odysseus.js'),
+  characterai: require('./characterai.js'),
+  sillytavern: require('./sillytavern.js'),
 };
 
 async function fetchUrl(url) {
   return new Promise((resolve, reject) => {
     const lib = url.startsWith('https') ? https : http;
-    lib.get(url, (res) => {
-      if (res.statusCode !== 200) return reject(new Error(`HTTP ${res.statusCode} from ${url}`));
-      const chunks = [];
-      res.on('data', d => chunks.push(d));
-      res.on('end', () => resolve(Buffer.concat(chunks)));
-    }).on('error', reject);
+    lib
+      .get(url, (res) => {
+        if (res.statusCode !== 200) return reject(new Error(`HTTP ${res.statusCode} from ${url}`));
+        const chunks = [];
+        res.on('data', (d) => chunks.push(d));
+        res.on('end', () => resolve(Buffer.concat(chunks)));
+      })
+      .on('error', reject);
   });
 }
 
 async function loadSource(source) {
   if (source.startsWith('http://') || source.startsWith('https://')) {
     log.info(`fetching ${source}...`);
-    return { filename: path.basename(new URL(source).pathname) || 'download', buf: await fetchUrl(source) };
+    return {
+      filename: path.basename(new URL(source).pathname) || 'download',
+      buf: await fetchUrl(source),
+    };
   }
   if (!fs.existsSync(source)) throw new Error(`file not found: ${source}`);
   return { filename: path.basename(source), buf: fs.readFileSync(source) };
@@ -49,20 +54,26 @@ async function llmExtract(text, ollamaUrl = 'http://127.0.0.1:11434', model = 'q
   const { chat } = require('../lib/ollama.js');
   const messages = [
     { role: 'system', content: EXTRACT_PROFILE_PROMPT },
-    { role: 'user',   content: text.slice(0, 12000) },
+    { role: 'user', content: text.slice(0, 12000) },
   ];
   const timeoutMs = 30000;
   const result = await Promise.race([
     chat(ollamaUrl, model, messages, false),
-    new Promise((_, rej) => setTimeout(() => rej(new Error('LLM extraction timed out after 30s')), timeoutMs)),
+    new Promise((_, rej) =>
+      setTimeout(() => rej(new Error('LLM extraction timed out after 30s')), timeoutMs)
+    ),
   ]);
-  try { return JSON.parse(result); } catch { return { other: result }; }
+  try {
+    return JSON.parse(result);
+  } catch {
+    return { other: result };
+  }
 }
 
 async function importSources(sources, extraDescription = '') {
-  const textParts  = [];
+  const textParts = [];
   const directData = [];
-  const summaries  = [];
+  const summaries = [];
 
   // Validate all sources before any work
   for (const src of sources) {
@@ -100,7 +111,9 @@ async function importSources(sources, extraDescription = '') {
 function writeToDb(characterName, { profile, directData }) {
   const dbPath = path.join(os.homedir(), '.anamnesis', 'characters', characterName, 'history.db');
   if (!fs.existsSync(dbPath)) {
-    console.warn(`warning: '${characterName}' has no history DB yet — start it first with: anamnesis start ${characterName}`);
+    console.warn(
+      `warning: '${characterName}' has no history DB yet — start it first with: anamnesis start ${characterName}`
+    );
     console.warn('import data was not written; re-run after starting the character.');
     return;
   }
@@ -135,13 +148,16 @@ async function runCli(args) {
   let yes = false;
 
   for (let i = 0; i < args.length; i++) {
-    if (args[i] === '--into')              intoName    = args[++i];
-    else if (args[i] === '--description')  description = args[++i];
-    else if (args[i] === '--yes')          yes = true;
+    if (args[i] === '--into') intoName = args[++i];
+    else if (args[i] === '--description') description = args[++i];
+    else if (args[i] === '--yes') yes = true;
     else sources.push(args[i]);
   }
 
-  if (!sources.length) { console.error('usage: anamnesis import <file|url> [...] [--into name]'); process.exit(1); }
+  if (!sources.length) {
+    console.error('usage: anamnesis import <file|url> [...] [--into name]');
+    process.exit(1);
+  }
 
   console.log(`\nimporting ${sources.length} source(s)...\n`);
   const result = await importSources(sources, description);
@@ -156,23 +172,41 @@ async function runCli(args) {
 
   if (!yes) {
     const prompts = require('prompts');
-    const { ok } = await prompts({ type: 'confirm', name: 'ok', message: 'Import this?', initial: true });
-    if (!ok) { console.log('aborted'); return; }
+    const { ok } = await prompts({
+      type: 'confirm',
+      name: 'ok',
+      message: 'Import this?',
+      initial: true,
+    });
+    if (!ok) {
+      console.log('aborted');
+      return;
+    }
   }
 
   if (intoName) {
     writeToDb(intoName, result);
     console.log(`\n✓ imported into '${intoName}'`);
   } else {
-    console.log('\nNo --into specified. Use --into <name> to merge into an existing character, or run anamnesis new to create one.');
+    console.log(
+      '\nNo --into specified. Use --into <name> to merge into an existing character, or run anamnesis new to create one.'
+    );
   }
 }
 
 async function runWizard({ name }) {
   const prompts = require('prompts');
-  const { sourceLine } = await prompts({ type: 'text', name: 'sourceLine', message: 'Files or URLs (space-separated):' });
+  const { sourceLine } = await prompts({
+    type: 'text',
+    name: 'sourceLine',
+    message: 'Files or URLs (space-separated):',
+  });
   const sources = (sourceLine || '').split(/\s+/).filter(Boolean);
-  const { desc } = await prompts({ type: 'text', name: 'desc', message: 'Add a written description? (optional):' });
+  const { desc } = await prompts({
+    type: 'text',
+    name: 'desc',
+    message: 'Add a written description? (optional):',
+  });
   return { sources, description: desc || '' };
 }
 

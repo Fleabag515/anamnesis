@@ -468,69 +468,106 @@ class HistoryStore {
     };
   }
 
-
   // ─── Character Profile ────────────────────────────────────────────────────
 
   getCharacterProfile() {
-    return this.db.prepare('SELECT * FROM character_profile ORDER BY id DESC LIMIT 1').get() || null;
+    return (
+      this.db.prepare('SELECT * FROM character_profile ORDER BY id DESC LIMIT 1').get() || null
+    );
   }
 
-  upsertCharacterProfile({ sourceType, sourcePath, sourceMtime, rawContent, parsedSummary, evolutionNotes, driftReminder, driftCheckedAt }) {
+  upsertCharacterProfile({
+    sourceType,
+    sourcePath,
+    sourceMtime,
+    rawContent,
+    parsedSummary,
+    evolutionNotes,
+    driftReminder,
+    driftCheckedAt,
+  }) {
     const existing = this.getCharacterProfile();
     const now = Math.floor(Date.now() / 1000);
     if (existing) {
-      this.db.prepare(`
+      this.db
+        .prepare(
+          `
         UPDATE character_profile
         SET source_type=?, source_path=?, source_mtime=?, raw_content=?, parsed_summary=?,
             evolution_notes=?, drift_reminder=?, drift_checked_at=?, updated_at=?
         WHERE id=?
-      `).run(
-        sourceType, sourcePath ?? null, sourceMtime ?? null,
-        rawContent ?? existing.raw_content,
-        parsedSummary ?? existing.parsed_summary,
-        evolutionNotes ?? existing.evolution_notes,
-        driftReminder ?? existing.drift_reminder,
-        driftCheckedAt ?? existing.drift_checked_at,
-        now, existing.id
-      );
+      `
+        )
+        .run(
+          sourceType,
+          sourcePath ?? null,
+          sourceMtime ?? null,
+          rawContent ?? existing.raw_content,
+          parsedSummary ?? existing.parsed_summary,
+          evolutionNotes ?? existing.evolution_notes,
+          driftReminder ?? existing.drift_reminder,
+          driftCheckedAt ?? existing.drift_checked_at,
+          now,
+          existing.id
+        );
     } else {
-      this.db.prepare(`
+      this.db
+        .prepare(
+          `
         INSERT INTO character_profile
           (source_type, source_path, source_mtime, raw_content, parsed_summary,
            evolution_notes, drift_reminder, drift_checked_at, updated_at)
         VALUES (?,?,?,?,?,?,?,?,?)
-      `).run(
-        sourceType, sourcePath ?? null, sourceMtime ?? null,
-        rawContent ?? '', parsedSummary ?? '{}',
-        evolutionNotes ?? '', driftReminder ?? '', driftCheckedAt ?? 0, now
-      );
+      `
+        )
+        .run(
+          sourceType,
+          sourcePath ?? null,
+          sourceMtime ?? null,
+          rawContent ?? '',
+          parsedSummary ?? '{}',
+          evolutionNotes ?? '',
+          driftReminder ?? '',
+          driftCheckedAt ?? 0,
+          now
+        );
     }
   }
 
   insertCharacterObservation(sessionKey, turnId, obsType, detail) {
-    return this.db.prepare(`
+    return this.db
+      .prepare(
+        `
       INSERT INTO character_observations (session_key, turn_id, obs_type, detail)
       VALUES (?, ?, ?, ?)
-    `).run(sessionKey, turnId ?? null, obsType, detail).lastInsertRowid;
+    `
+      )
+      .run(sessionKey, turnId ?? null, obsType, detail).lastInsertRowid;
   }
 
   getPendingObservations(limit = 50) {
-    return this.db.prepare(`
+    return this.db
+      .prepare(
+        `
       SELECT * FROM character_observations
       WHERE consolidated=0 ORDER BY observed_at ASC LIMIT ?
-    `).all(limit);
+    `
+      )
+      .all(limit);
   }
 
   countPendingObservations() {
-    return this.db.prepare(
-      "SELECT COUNT(*) as n FROM character_observations WHERE consolidated=0"
-    ).get().n;
+    return this.db
+      .prepare('SELECT COUNT(*) as n FROM character_observations WHERE consolidated=0')
+      .get().n;
   }
 
   markObservationsConsolidated(ids) {
     if (!ids.length) return;
     const ph = ids.map(() => '?').join(',');
-    this.db.prepare(`UPDATE character_observations SET consolidated=1 WHERE id IN (${ph})`).run(...ids);
+    this.db
+      .prepare(`UPDATE character_observations SET consolidated=1 WHERE id IN (${ph})`)
+      .run(...ids);
   }
 
   close() {

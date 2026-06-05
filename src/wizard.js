@@ -1,15 +1,15 @@
 'use strict';
 
-const prompts   = require('prompts');
-const path      = require('path');
-const os        = require('os');
-const fs        = require('fs');
+const prompts = require('prompts');
+const path = require('path');
+const os = require('os');
+const fs = require('fs');
 
-const client         = require('./lib/client.js');
+const client = require('./lib/client.js');
 const { buildConfig } = require('./lib/char-config.js');
 const { suggestPort } = require('./lib/ports.js');
-const Registry       = require('./lib/registry.js');
-const log            = require('./lib/logger.js').make('wizard');
+const Registry = require('./lib/registry.js');
+const log = require('./lib/logger.js').make('wizard');
 
 const REGISTRY_PATH = path.join(os.homedir(), '.anamnesis', 'registry.json');
 const NAME_RE = /^[a-z0-9_-]+$/i;
@@ -22,8 +22,11 @@ async function run(args) {
 
   let name = flags.name;
   if (!name) {
-    ({ name } = await prompts({ type: 'text', name: 'name', message: 'Character name:', validate: v =>
-      NAME_RE.test(v) ? true : 'letters, digits, hyphens, underscores only',
+    ({ name } = await prompts({
+      type: 'text',
+      name: 'name',
+      message: 'Character name:',
+      validate: (v) => (NAME_RE.test(v) ? true : 'letters, digits, hyphens, underscores only'),
     }));
   }
   if (!name) process.exit(0);
@@ -32,26 +35,43 @@ async function run(args) {
     process.exit(1);
   }
 
-  const suggested = flags.port || await suggestPort(registry);
+  const suggested = flags.port || (await suggestPort(registry));
   let port = suggested;
   if (!flags.port) {
-    ({ port } = await prompts({ type: 'number', name: 'port', message: 'Port:', initial: suggested }));
+    ({ port } = await prompts({
+      type: 'number',
+      name: 'port',
+      message: 'Port:',
+      initial: suggested,
+    }));
   }
 
   let upstreamUrl = flags.upstream || '';
   if (!upstreamUrl) {
-    ({ upstreamUrl } = await prompts({ type: 'text', name: 'upstreamUrl', message: 'Model endpoint URL:', initial: 'http://127.0.0.1:8083/v1' }));
+    ({ upstreamUrl } = await prompts({
+      type: 'text',
+      name: 'upstreamUrl',
+      message: 'Model endpoint URL:',
+      initial: 'http://127.0.0.1:8083/v1',
+    }));
   }
 
   let apiKey = flags.key || '';
   if (!apiKey) {
-    ({ apiKey } = await prompts({ type: 'text', name: 'apiKey', message: 'API key:', initial: 'localqwen' }));
+    ({ apiKey } = await prompts({
+      type: 'text',
+      name: 'apiKey',
+      message: 'API key:',
+      initial: 'localqwen',
+    }));
   }
 
   let mode = flags.blank ? 'blank' : flags.description ? 'describe' : null;
   if (!mode) {
     ({ mode } = await prompts({
-      type: 'select', name: 'mode', message: 'Character setup:',
+      type: 'select',
+      name: 'mode',
+      message: 'Character setup:',
       choices: [
         { title: 'Import from files or URLs', value: 'import' },
         { title: 'Describe the character concept', value: 'describe' },
@@ -70,12 +90,17 @@ async function run(args) {
     importSources = result.sources;
   } else if (mode === 'describe') {
     ({ characterDescription } = await prompts({
-      type: 'text', name: 'characterDescription', message: 'Describe the character:',
+      type: 'text',
+      name: 'characterDescription',
+      message: 'Describe the character:',
     }));
   }
 
   const config = buildConfig({
-    name, port, upstreamUrl, apiKey,
+    name,
+    port,
+    upstreamUrl,
+    apiKey,
     characterDescription: characterDescription || undefined,
     blank: mode === 'blank',
   });
@@ -89,7 +114,12 @@ async function run(args) {
   // Start first so DB exists before import
   let startNow = flags.yes;
   if (startNow === undefined) {
-    ({ startNow } = await prompts({ type: 'confirm', name: 'startNow', message: `Start ${name} now?`, initial: true }));
+    ({ startNow } = await prompts({
+      type: 'confirm',
+      name: 'startNow',
+      message: `Start ${name} now?`,
+      initial: true,
+    }));
   }
   if (startNow) {
     const startRes = await client.startCharacter(name);
@@ -105,7 +135,9 @@ async function run(args) {
   // Import after start (DB now exists)
   if (importSources.length > 0) {
     if (!startNow) {
-      console.log(`\nnote: import data will be written once you start '${name}' (run: anamnesis start ${name})`);
+      console.log(
+        `\nnote: import data will be written once you start '${name}' (run: anamnesis start ${name})`
+      );
     } else {
       const importer = require('./importers/index.js');
       await importer.importInto(name, importSources, characterDescription);
@@ -117,21 +149,44 @@ async function run(args) {
 async function edit(name) {
   const registry = new Registry(REGISTRY_PATH);
   const entry = registry.get(name);
-  if (!entry) { console.error(`character '${name}' not found`); process.exit(1); }
+  if (!entry) {
+    console.error(`character '${name}' not found`);
+    process.exit(1);
+  }
 
   const configPath = path.join(os.homedir(), '.anamnesis', 'characters', name, 'config.json');
   const current = JSON.parse(fs.readFileSync(configPath, 'utf8'));
 
   console.log(`\n✏️  editing ${name}\n`);
 
-  const { upstreamUrl } = await prompts({ type: 'text', name: 'upstreamUrl', message: 'Model endpoint URL:', initial: current.upstream.baseUrl });
-  const { apiKey }      = await prompts({ type: 'text', name: 'apiKey',      message: 'API key:',           initial: current.upstream.apiKey });
-  const { port }        = await prompts({ type: 'number', name: 'port',      message: 'Port:',             initial: current.proxy.port });
-  const { tokenBudget } = await prompts({ type: 'number', name: 'tokenBudget', message: 'Token budget:',   initial: current.context.tokenBudget });
+  const { upstreamUrl } = await prompts({
+    type: 'text',
+    name: 'upstreamUrl',
+    message: 'Model endpoint URL:',
+    initial: current.upstream.baseUrl,
+  });
+  const { apiKey } = await prompts({
+    type: 'text',
+    name: 'apiKey',
+    message: 'API key:',
+    initial: current.upstream.apiKey,
+  });
+  const { port } = await prompts({
+    type: 'number',
+    name: 'port',
+    message: 'Port:',
+    initial: current.proxy.port,
+  });
+  const { tokenBudget } = await prompts({
+    type: 'number',
+    name: 'tokenBudget',
+    message: 'Token budget:',
+    initial: current.context.tokenBudget,
+  });
 
-  current.upstream.baseUrl    = upstreamUrl;
-  current.upstream.apiKey     = apiKey;
-  current.proxy.port          = port;
+  current.upstream.baseUrl = upstreamUrl;
+  current.upstream.apiKey = apiKey;
+  current.proxy.port = port;
   current.context.tokenBudget = tokenBudget;
 
   fs.writeFileSync(configPath, JSON.stringify(current, null, 2), 'utf8');
@@ -150,12 +205,12 @@ async function edit(name) {
 function parseFlags(args) {
   const flags = {};
   for (let i = 0; i < args.length; i++) {
-    if (args[i] === '--name')             flags.name        = args[++i];
-    else if (args[i] === '--port')        flags.port        = parseInt(args[++i]);
-    else if (args[i] === '--upstream')    flags.upstream    = args[++i];
-    else if (args[i] === '--key')         flags.key         = args[++i];
-    else if (args[i] === '--blank')       flags.blank       = true;
-    else if (args[i] === '--yes')         flags.yes         = true;
+    if (args[i] === '--name') flags.name = args[++i];
+    else if (args[i] === '--port') flags.port = parseInt(args[++i]);
+    else if (args[i] === '--upstream') flags.upstream = args[++i];
+    else if (args[i] === '--key') flags.key = args[++i];
+    else if (args[i] === '--blank') flags.blank = true;
+    else if (args[i] === '--yes') flags.yes = true;
     else if (args[i] === '--description') flags.description = args[++i];
   }
   return flags;

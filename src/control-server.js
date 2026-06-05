@@ -13,9 +13,15 @@ function json(res, status, body) {
 async function readBody(req) {
   return new Promise((resolve) => {
     let buf = '';
-    req.on('data', d => { buf += d; });
+    req.on('data', (d) => {
+      buf += d;
+    });
     req.on('end', () => {
-      try { resolve(JSON.parse(buf)); } catch { resolve({}); }
+      try {
+        resolve(JSON.parse(buf));
+      } catch {
+        resolve({});
+      }
     });
   });
 }
@@ -28,7 +34,7 @@ function createControlServer(manager, daemonStartedAt) {
     json(res, 200, {
       status: 'ok',
       uptime: Math.floor((Date.now() - daemonStartedAt) / 1000),
-      active: manager.listCharacters().filter(c => c.running).length,
+      active: manager.listCharacters().filter((c) => c.running).length,
     });
   });
 
@@ -58,7 +64,8 @@ function createControlServer(manager, daemonStartedAt) {
   // POST /characters/:name/start
   router.post('/characters/:name/start', async (req, res) => {
     const { name } = req.params;
-    if (!manager.getCharacter(name)) return json(res, 404, { error: `character '${name}' not found` });
+    if (!manager.getCharacter(name))
+      return json(res, 404, { error: `character '${name}' not found` });
     try {
       const port = await manager.startCharacter(name);
       json(res, 200, { name, port });
@@ -70,7 +77,8 @@ function createControlServer(manager, daemonStartedAt) {
   // POST /characters/:name/stop
   router.post('/characters/:name/stop', async (req, res) => {
     const { name } = req.params;
-    if (!manager.getCharacter(name)) return json(res, 404, { error: `character '${name}' not found` });
+    if (!manager.getCharacter(name))
+      return json(res, 404, { error: `character '${name}' not found` });
     try {
       await manager.stopCharacter(name);
       json(res, 200, { name, stopped: true });
@@ -82,7 +90,8 @@ function createControlServer(manager, daemonStartedAt) {
   // DELETE /characters/:name — auto-stops if active, then deletes
   router.delete('/characters/:name', async (req, res) => {
     const { name } = req.params;
-    if (!manager.getCharacter(name)) return json(res, 404, { error: `character '${name}' not found` });
+    if (!manager.getCharacter(name))
+      return json(res, 404, { error: `character '${name}' not found` });
     try {
       if (manager.isActive(name)) await manager.stopCharacter(name);
       manager.deleteCharacter(name);

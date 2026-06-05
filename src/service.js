@@ -1,12 +1,12 @@
 'use strict';
 
 const { execSync } = require('child_process');
-const fs   = require('fs');
+const fs = require('fs');
 const path = require('path');
-const os   = require('os');
+const os = require('os');
 
-const DAEMON_JS  = path.join(__dirname, 'daemon.js');
-const NODE_BIN   = process.execPath;
+const DAEMON_JS = path.join(__dirname, 'daemon.js');
+const NODE_BIN = process.execPath;
 const IS_WINDOWS = process.platform === 'win32';
 
 async function install() {
@@ -52,7 +52,9 @@ async function installWindows() {
   try {
     require('child_process').execSync('net session', { stdio: 'pipe' });
   } catch {
-    console.error('error: anamnesis install requires Administrator — right-click and "Run as Administrator"');
+    console.error(
+      'error: anamnesis install requires Administrator — right-click and "Run as Administrator"'
+    );
     process.exit(1);
   }
   let Service;
@@ -64,7 +66,10 @@ async function installWindows() {
   }
   const svc = new Service({ name: 'Anamnesis', script: DAEMON_JS });
   await new Promise((resolve) => {
-    svc.on('install', () => { svc.start(); resolve(); });
+    svc.on('install', () => {
+      svc.start();
+      resolve();
+    });
     svc.install();
   });
   console.log('✓ Anamnesis Windows Service installed and started');
@@ -79,18 +84,41 @@ async function uninstall() {
 }
 
 function uninstallLinux() {
-  try { execSync('systemctl stop anamnesis'); } catch { /* not running */ }
-  try { execSync('systemctl disable anamnesis'); } catch { /* not enabled */ }
-  try { fs.unlinkSync('/etc/systemd/system/anamnesis.service'); } catch { /* already gone */ }
-  try { execSync('systemctl daemon-reload'); } catch { /* ignore */ }
+  try {
+    execSync('systemctl stop anamnesis');
+  } catch {
+    /* not running */
+  }
+  try {
+    execSync('systemctl disable anamnesis');
+  } catch {
+    /* not enabled */
+  }
+  try {
+    fs.unlinkSync('/etc/systemd/system/anamnesis.service');
+  } catch {
+    /* already gone */
+  }
+  try {
+    execSync('systemctl daemon-reload');
+  } catch {
+    /* ignore */
+  }
   console.log('✓ anamnesis service uninstalled (data preserved in ~/.anamnesis/)');
 }
 
 async function uninstallWindows() {
   let Service;
-  try { ({ Service } = require('node-windows')); } catch { return; }
+  try {
+    ({ Service } = require('node-windows'));
+  } catch {
+    return;
+  }
   const svc = new Service({ name: 'Anamnesis', script: DAEMON_JS });
-  await new Promise(resolve => { svc.on('uninstall', resolve); svc.uninstall(); });
+  await new Promise((resolve) => {
+    svc.on('uninstall', resolve);
+    svc.uninstall();
+  });
   console.log('✓ Anamnesis Windows Service uninstalled (data preserved)');
 }
 
