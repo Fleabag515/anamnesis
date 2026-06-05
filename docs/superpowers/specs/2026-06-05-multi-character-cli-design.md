@@ -270,11 +270,31 @@ The `version` field is incremented if the schema changes. The importer checks `v
 
 ---
 
-## 8. Error Handling
+## 8. Port Conflict Resolution
+
+Anamnesis handles port conflicts automatically without user intervention. There are four scenarios:
+
+**Scenario 1 — Port taken by an external process**
+When `anamnesis start <name>` catches `EADDRINUSE`, the daemon scans upward from the requested port (8084 → 8085 → 8086 …) until it finds a free port, binds there, updates the character's stored port in `registry.json`, and reports back: *"port 8084 was in use — started mark on 8085 instead."* The new port is persisted so subsequent starts use it automatically.
+
+**Scenario 2 — Two characters with the same port in registry**
+At daemon startup, before binding any character, all active characters are scanned for port collisions. Any duplicate is reassigned via the same auto-increment scan and its entry updated in `registry.json`. The user is informed of any reassignments in the startup log.
+
+**Scenario 3 — Port taken by another active Anamnesis character**
+Caught by scenario 2 at startup. If it occurs mid-session (two characters started in rapid succession), the second start catches `EADDRINUSE` and falls through to scenario 1.
+
+**Scenario 4 — Port held after unclean daemon shutdown**
+Non-issue: the OS releases TCP ports immediately when a process dies. On restart the port is free.
+
+The net result: `anamnesis start <name>` never fails due to a port conflict — it always finds a free port and tells you where it landed.
+
+---
+
+## 9. Error Handling
 
 | Scenario | Behaviour |
 |----------|-----------|
-| Port already in use on `start` | CLI prints: "port 8084 is already in use — choose a different port with `anamnesis edit <name>`" |
+| Port already in use on `start` | Auto-increment to next free port, update registry, inform user (see Section 8) |
 | Daemon not running, auto-start fails | CLI prints: "daemon failed to start — check ~/.anamnesis/daemon.log" |
 | Daemon managed by systemd, not running | CLI prints: "daemon not running — start it with 'anamnesis' or check 'systemctl status anamnesis'" |
 | Import file not found | Fast-fail before any extraction: lists all bad paths |
