@@ -1,109 +1,90 @@
 #!/usr/bin/env bash
-# install.sh — install Anamnesis as a systemd user/system service.
-#
-# Picks the newest Node version available on PATH or under NVM. The previous
-# hard-coded `v22.22.2` path was a portability bug — anyone without that
-# exact NVM install would silently fall through to whatever `which node`
-# returned (or fail).
+# install.sh — install the anamnesis CLI on Linux or macOS.
+# Does NOT register a system service — run `anamnesis install` for that.
 #
 # Usage:
-#   sudo bash install.sh           # install + enable + start
+#   curl -fsSL https://raw.githubusercontent.com/Fleabag515/anamnesis/main/install.sh | bash
 
 set -euo pipefail
 
-INSTALL_DIR="$(cd "$(dirname "$0")" && pwd)"
-SERVICE_USER="${SUDO_USER:-$(whoami)}"
-SERVICE_NAME="anamnesis"
+REPO="https://github.com/Fleabag515/anamnesis.git"
+INSTALL_DIR="${ANAMNESIS_INSTALL_DIR:-$HOME/.local/share/anamnesis}"
+BIN_DIR="${ANAMNESIS_BIN_DIR:-$HOME/.local/bin}"
+MIN_NODE_MAJOR=18
 
-# ─── Locate node ────────────────────────────────────────────────────────────
-# Prefer NVM's latest *LTS* version (even-major releases: 18, 20, 22, 24, …)
-# over odd-major dev releases (19, 21, 23, 25). The service is long-running
-# and depends on a native addon (better-sqlite3) whose ABI is pinned to the
-# build-time Node — silently picking a non-LTS minor a user just happens to
-# have installed would force a rebuild on every install.sh run.
-NVM_DIR_USER="/home/${SERVICE_USER}/.nvm"
-NODE_BIN=""
-NPM_BIN=""
+# ─── Colour helpers ──────────────────────────────────────────────────────────
+green()  { printf "\033[32m%s\033[0m\n" "$*"; }
+yellow() { printf "\033[33m%s\033[0m\n" "$*"; }
+red()    { printf "\033[31m%s\033[0m\n" "$*" >&2; }
 
-pick_nvm_node() {
-  local versions_dir="$1"
-  local filter="$2"  # extended regex; empty = anything
-  local pick
-  if [ -z "$filter" ]; then
-    pick="$(ls -1 "$versions_dir" 2>/dev/null | sort -V | tail -n1 || true)"
-  else
-    pick="$(ls -1 "$versions_dir" 2>/dev/null | grep -E "$filter" | sort -V | tail -n1 || true)"
-  fi
-  if [ -n "$pick" ] && [ -x "$versions_dir/$pick/bin/node" ]; then
-    echo "$versions_dir/$pick"
-  fi
-}
-
-if [ -d "${NVM_DIR_USER}/versions/node" ]; then
-  # First try: LTS only (even-major). Matches v<…><0|2|4|6|8>.x.x
-  # so v18 / v20 / v22 / v24 win over v17 / v19 / v21 / v23 / v25.
-  LTS_PREFIX="$(pick_nvm_node "${NVM_DIR_USER}/versions/node" '^v[0-9]*[02468]\.')"
-  if [ -n "$LTS_PREFIX" ]; then
-    NODE_BIN="${LTS_PREFIX}/bin/node"
-    NPM_BIN="${LTS_PREFIX}/bin/npm"
-  else
-    # No LTS installed; fall back to whatever's newest under NVM.
-    ANY_PREFIX="$(pick_nvm_node "${NVM_DIR_USER}/versions/node" '')"
-    if [ -n "$ANY_PREFIX" ]; then
-      NODE_BIN="${ANY_PREFIX}/bin/node"
-      NPM_BIN="${ANY_PREFIX}/bin/npm"
+# ─── Locate / install Node ───────────────────────────────────────────────────
+find_node() {
+  local nvm_root="${NVM_DIR:-$HOME/.nvm}"
+  if [ -d "$nvm_root/versions/node" ]; then
+    local pick
+    pick="$(ls -1 "$nvm_root/versions/node" | grep -E '^v[0-9]*[02468]\.' | sort -V | tail -1 || true)"
+    if [ -n "$pick" ] && [ -x "$nvm_root/versions/node/$pick/bin/node" ]; then
+      echo "$nvm_root/versions/node/$pick/bin/node"; return
     fi
   fi
+  command -v node 2>/dev/null || true
+}
+
+NODE_BIN="$(find_node)"
+if [ -z "$NODE_BIN" ]; then
+  yellow "Node.js not found — installing via nvm..."
+  curl -fsSL https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh | bash
+  export NVM_DIR="$HOME/.nvm"
+  # shellcheck disable=SC1091
+  [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
+  nvm install --lts
+  NODE_BIN="$(find_node)"
 fi
 
-if [ -z "${NODE_BIN}" ]; then
-  NODE_BIN="$(command -v node || true)"
-  NPM_BIN="$(command -v npm || true)"
-fi
-
-if [ -z "${NODE_BIN}" ] || [ -z "${NPM_BIN}" ]; then
-  echo "Could not locate node/npm. Install Node 18+ (or NVM) first." >&2
+node_major="$("$NODE_BIN" -e 'console.log(process.versions.node.split(".")[0])')"
+if [ "$node_major" -lt "$MIN_NODE_MAJOR" ]; then
+  red "Node $node_major found but $MIN_NODE_MAJOR+ required. Install Node $MIN_NODE_MAJOR+ and retry."
   exit 1
 fi
 
-echo "Installing ${SERVICE_NAME} from ${INSTALL_DIR}"
-echo "Running as user: ${SERVICE_USER}"
-echo "Node: ${NODE_BIN} ($(${NODE_BIN} --version))"
+NPM_BIN="$(dirname "$NODE_BIN")/npm"
+green "Node $("$NODE_BIN" --version) at $NODE_BIN"
 
-# ─── Install dependencies ───────────────────────────────────────────────────
-cd "${INSTALL_DIR}"
-"${NPM_BIN}" install --omit=dev
+# ─── Clone or update repo ────────────────────────────────────────────────────
+if [ -d "$INSTALL_DIR/.git" ]; then
+  yellow "Updating existing install at $INSTALL_DIR..."
+  git -C "$INSTALL_DIR" pull --ff-only
+else
+  yellow "Installing to $INSTALL_DIR..."
+  git clone --depth=1 "$REPO" "$INSTALL_DIR"
+fi
 
-# ─── Write systemd unit ─────────────────────────────────────────────────────
-UNIT_PATH="/etc/systemd/system/${SERVICE_NAME}.service"
-cat > "${UNIT_PATH}" << UNIT
-[Unit]
-Description=Anamnesis — self-organizing memory proxy for LLM agents
-After=network.target
+cd "$INSTALL_DIR"
+"$NPM_BIN" install --omit=dev --silent
 
-[Service]
-Type=simple
-User=${SERVICE_USER}
-WorkingDirectory=${INSTALL_DIR}
-Environment=ANAMNESIS_LOG=info
-ExecStart=${NODE_BIN} ${INSTALL_DIR}/src/proxy.js
-Restart=on-failure
-RestartSec=5
-StandardOutput=journal
-StandardError=journal
-SyslogIdentifier=${SERVICE_NAME}
+# ─── Create wrapper script on PATH ──────────────────────────────────────────
+mkdir -p "$BIN_DIR"
+cat > "$BIN_DIR/anamnesis" << WRAPPER
+#!/usr/bin/env bash
+exec "$NODE_BIN" "$INSTALL_DIR/src/cli.js" "\$@"
+WRAPPER
+chmod +x "$BIN_DIR/anamnesis"
 
-[Install]
-WantedBy=multi-user.target
-UNIT
+# ─── Ensure BIN_DIR is on PATH ──────────────────────────────────────────────
+if ! echo ":$PATH:" | grep -q ":$BIN_DIR:"; then
+  for rc in "$HOME/.bashrc" "$HOME/.zshrc" "$HOME/.profile"; do
+    if [ -f "$rc" ]; then
+      echo "export PATH=\"\$PATH:$BIN_DIR\"" >> "$rc"
+      yellow "Added $BIN_DIR to PATH in $rc"
+      break
+    fi
+  done
+fi
 
-systemctl daemon-reload
-systemctl enable "${SERVICE_NAME}.service"
-systemctl restart "${SERVICE_NAME}.service"
-sleep 2
-systemctl status "${SERVICE_NAME}.service" --no-pager || true
-
-PORT="$("${NODE_BIN}" -e "console.log(require('${INSTALL_DIR}/config.json').proxy.port)")"
 echo ""
-echo "Done. ${SERVICE_NAME} is running on port ${PORT}"
-echo "Point your OpenAI-compatible client baseUrl to: http://127.0.0.1:${PORT}/v1"
+green "✓ anamnesis installed"
+echo "  Run: anamnesis new       — create your first character"
+echo "  Run: anamnesis install   — register as a system service (optional)"
+echo ""
+echo "  If 'anamnesis' is not found, open a new terminal or run:"
+echo "    export PATH=\"\$PATH:$BIN_DIR\""
