@@ -1,0 +1,194 @@
+#!/usr/bin/env node
+'use strict';
+
+const { execFileSync, spawn } = require('child_process');
+const path = require('path');
+const os   = require('os');
+const fs   = require('fs');
+const pid  = require('./lib/pid.js');
+const client = require('./lib/client.js');
+
+const DAEMON_JS = path.join(__dirname, 'daemon.js');
+
+// ─── Daemon auto-start ────────────────────────────────────────────────────────
+
+async function ensureDaemon() {
+  if (pid.isRunning()) return;
+
+  const managed = isManagedService();
+  if (managed) {
+    console.error('daemon not running — start it with: anamnesis\n  or check: systemctl status anamnesis');
+    process.exit(1);
+  }
+
+  const child = spawn(process.execPath, [DAEMON_JS], {
+    detached: true,
+    stdio: 'ignore',
+    env: { ...process.env, ANAMNESIS_LOG: process.env.ANAMNESIS_LOG || 'info' },
+  });
+  child.unref();
+
+  const deadline = Date.now() + 5000;
+  while (Date.now() < deadline) {
+    await new Promise(r => setTimeout(r, 200));
+    try {
+      const res = await client.status();
+      if (res.status === 200) return;
+    } catch { /* not ready yet */ }
+  }
+  console.error('daemon failed to start — check ~/.anamnesis/daemon.log');
+  process.exit(1);
+}
+
+function isManagedService() {
+  try {
+    execFileSync('systemctl', ['is-enabled', 'anamnesis'], { stdio: 'pipe' });
+    return true;
+  } catch { return false; }
+}
+
+// ─── Output helpers ───────────────────────────────────────────────────────────
+
+function printCharacters(characters) {
+  if (!characters.length) { console.log('No characters. Run: anamnesis new'); return; }
+  const W = { name: 4, port: 4 };
+  for (const c of characters) W.name = Math.max(W.name, c.name.length);
+  console.log(`${'NAME'.padEnd(W.name)}  ${'PORT'.padEnd(W.port)}  STATUS`);
+  for (const c of characters) {
+    console.log(`${c.name.padEnd(W.name)}  ${String(c.port).padEnd(W.port)}  ${c.running ? 'active' : 'inactive'}`);
+  }
+}
+
+function die(msg) { console.error(`error: ${msg}`); process.exit(1); }
+
+// ─── Commands ─────────────────────────────────────────────────────────────────
+
+const commands = {
+  async status() {
+    await ensureDaemon();
+    const r = await client.status();
+    if (r.status !== 200) die('daemon not responding');
+    const chars = (await client.listCharacters()).body.characters || [];
+    console.log(`anamnesis daemon — uptime ${r.body.uptime}s, ${r.body.active} active`);
+    printCharacters(chars);
+  },
+
+  async list() {
+    await ensureDaemon();
+    const r = await client.listCharacters();
+    printCharacters(r.body.characters || []);
+  },
+
+  async start([name]) {
+    if (!name) die('usage: anamnesis start <name>');
+    await ensureDaemon();
+    const r = await client.startCharacter(name);
+    if (r.status !== 200) die(r.body.error || 'failed to start');
+    console.log(`✓ ${name} running on http://127.0.0.1:${r.body.port}/v1`);
+  },
+
+  async stop([name]) {
+    if (!name) die('usage: anamnesis stop <name>');
+    await ensureDaemon();
+    const r = await client.stopCharacter(name);
+    if (r.status !== 200) die(r.body.error || 'failed to stop');
+    console.log(`✓ ${name} stopped`);
+  },
+
+  async restart([name]) {
+    if (!name) die('usage: anamnesis restart <name>');
+    await commands.stop([name]);
+    await commands.start([name]);
+  },
+
+  async show([name]) {
+    if (!name) die('usage: anamnesis show <name>');
+    await ensureDaemon();
+    const r = await client.getCharacter(name);
+    if (r.status === 404) die(`character '${name}' not found`);
+    const c = r.body;
+    console.log(`name:   ${c.name}`);
+    console.log(`port:   ${c.port}`);
+    console.log(`status: ${c.running ? 'active' : 'inactive'}`);
+  },
+
+  async remove([name, ...rest]) {
+    if (!name) die('usage: anamnesis remove <name>');
+    const yes = rest.includes('--yes');
+    await ensureDaemon();
+    if (!yes) {
+      const prompts = require('prompts');
+      const { ok } = await prompts({ type: 'confirm', name: 'ok', message: `Delete '${name}' and all its memories?`, initial: false });
+      if (!ok) { console.log('aborted'); return; }
+    }
+    const r = await client.deleteCharacter(name);
+    if (r.status !== 200) die(r.body.error || 'failed to delete');
+    console.log(`✓ ${name} deleted`);
+  },
+
+  async logs([name]) {
+    if (!name) die('usage: anamnesis logs <name>');
+    // MVP: tails full daemon journal. Per-character SSE streaming is post-MVP.
+    console.log(`(showing all daemon logs — filter for '${name}' manually)\n`);
+    try {
+      const child = spawn('journalctl', ['-u', 'anamnesis', '-f', '--no-pager', '-n', '50'], { stdio: 'inherit' });
+      child.on('error', () => console.log('journalctl not available — check ~/.anamnesis/daemon.log'));
+    } catch {
+      console.log('check ~/.anamnesis/daemon.log');
+    }
+  },
+
+  async new(args) {
+    await ensureDaemon();
+    const wizard = require('./wizard.js');
+    await wizard.run(args);
+  },
+
+  async edit([name, ...rest]) {
+    if (!name) die('usage: anamnesis edit <name>');
+    await ensureDaemon();
+    const wizard = require('./wizard.js');
+    await wizard.edit(name);
+  },
+
+  async import(args) {
+    const importer = require('./importers/index.js');
+    await importer.runCli(args);
+  },
+
+  async export([name]) {
+    if (!name) die('usage: anamnesis export <name>');
+    console.log('export not yet implemented');
+  },
+
+  async install() {
+    const svc = require('./service.js');
+    await svc.install();
+  },
+
+  async uninstall() {
+    const svc = require('./service.js');
+    await svc.uninstall();
+  },
+};
+
+// ─── Aliases ──────────────────────────────────────────────────────────────────
+commands.ls      = commands.list;
+commands.ps      = commands.status;
+commands.run     = commands.start;
+commands.kill    = commands.stop;
+commands.rm      = commands.remove;
+
+// ─── Entry point ─────────────────────────────────────────────────────────────
+
+const [,, cmd, ...args] = process.argv;
+
+if (!cmd) {
+  commands.status().catch(e => { console.error(e.message); process.exit(1); });
+} else if (commands[cmd]) {
+  commands[cmd](args).catch(e => { console.error('error:', e.message); process.exit(1); });
+} else {
+  console.error(`unknown command: ${cmd}`);
+  console.error('commands: new, list, start, stop, restart, show, edit, remove, import, export, logs, status, install, uninstall');
+  process.exit(1);
+}

@@ -1,8 +1,11 @@
 {
   "name": "anamnesis",
   "version": "0.3.0",
-  "description": "Anamnesis — self-organizing memory proxy for LLM agents. MemCell extraction, MemScene consolidation, scene-guided context retrieval, foresight extraction.",
+  "description": "Anamnesis \u2014 self-organizing memory proxy for LLM agents. MemCell extraction, MemScene consolidation, scene-guided context retrieval, foresight extraction.",
   "main": "src/proxy.js",
+  "bin": {
+    "anamnesis": "src/cli.js"
+  },
   "scripts": {
     "start": "node src/proxy.js",
     "dev": "node --watch src/proxy.js",
@@ -14,7 +17,8 @@
     "format:check": "prettier --check \"src/**/*.js\" \"test/**/*.js\" \"*.{json,md}\""
   },
   "dependencies": {
-    "better-sqlite3": "^9.6.0"
+    "better-sqlite3": "^9.6.0",
+    "prompts": "^2.4.2"
   },
   "devDependencies": {
     "eslint": "^9.13.0",
@@ -43,5 +47,8 @@
     "openai-compatible",
     "context",
     "agents"
-  ]
+  ],
+  "optionalDependencies": {
+    "node-windows": "^1.0.0-beta.8"
+  }
 }
