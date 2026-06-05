@@ -65,7 +65,7 @@ function printCharacters(characters) {
   console.log(`${'NAME'.padEnd(W.name)}  ${'PORT'.padEnd(W.port)}  STATUS`);
   for (const c of characters) {
     console.log(
-      `${c.name.padEnd(W.name)}  ${String(c.port).padEnd(W.port)}  ${c.running ? 'active' : 'inactive'}`
+      `${c.name.padEnd(W.name)}  \x1b[1m${String(c.port).padEnd(W.port)}\x1b[0m  ${c.running ? '\x1b[32mactive\x1b[0m' : 'inactive'}`
     );
   }
 }

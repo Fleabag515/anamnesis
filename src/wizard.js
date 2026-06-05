@@ -14,6 +14,40 @@ const log = require('./lib/logger.js').make('wizard');
 const REGISTRY_PATH = path.join(os.homedir(), '.anamnesis', 'registry.json');
 const NAME_RE = /^[a-z0-9_-]+$/i;
 
+// ─── Auto-detect running LLM endpoint ────────────────────────────────────────
+
+async function detectEndpoint() {
+  const candidates = [
+    { url: 'http://127.0.0.1:8083/v1', label: 'llama-server' },
+    { url: 'http://127.0.0.1:11434/v1', label: 'ollama' },
+    { url: 'http://127.0.0.1:1234/v1', label: 'lm-studio' },
+    { url: 'http://127.0.0.1:5001/v1', label: 'koboldcpp' },
+    { url: 'http://127.0.0.1:8080/v1', label: 'other' },
+  ];
+  for (const c of candidates) {
+    try {
+      const { port, hostname } = new URL(c.url);
+      await new Promise((resolve, reject) => {
+        const net = require('net');
+        const sock = net.connect(Number(port) || 80, hostname, () => {
+          sock.destroy();
+          resolve();
+        });
+        sock.setTimeout(300);
+        sock.on('timeout', () => {
+          sock.destroy();
+          reject(new Error('timeout'));
+        });
+        sock.on('error', reject);
+      });
+      return c.url; // first one that accepts a connection wins
+    } catch {
+      /* not running */
+    }
+  }
+  return candidates[0].url; // fallback to llama-server
+}
+
 async function run(args) {
   const flags = parseFlags(args);
   const registry = new Registry(REGISTRY_PATH);
@@ -48,11 +82,12 @@ async function run(args) {
 
   let upstreamUrl = flags.upstream || '';
   if (!upstreamUrl) {
+    const detectedUrl = await detectEndpoint();
     ({ upstreamUrl } = await prompts({
       type: 'text',
       name: 'upstreamUrl',
       message: 'Model endpoint URL:',
-      initial: 'http://127.0.0.1:8083/v1',
+      initial: detectedUrl,
     }));
   }
 
@@ -62,7 +97,7 @@ async function run(args) {
       type: 'text',
       name: 'apiKey',
       message: 'API key:',
-      initial: 'localqwen',
+      initial: '',
     }));
   }
 

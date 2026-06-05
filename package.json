@@ -9,8 +9,8 @@
   "scripts": {
     "start": "node src/proxy.js",
     "dev": "node --watch src/proxy.js",
-    "test": "node --test \"test/**/*.test.js\"",
-    "test:watch": "node --test --watch \"test/**/*.test.js\"",
+    "test": "node --test \"test/*.test.js\" \"test/**/*.test.js\"",
+    "test:watch": "node --test --watch \"test/*.test.js\" \"test/**/*.test.js\"",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
     "format": "prettier --write \"src/**/*.js\" \"test/**/*.js\" \"*.{json,md}\"",
