@@ -1,3 +1,5 @@
+'use strict';
+
 /**
  * extractor.js — Engram extraction with importance + category scoring.
  *
@@ -6,51 +8,26 @@
  *   - category:   technical | decision | preference | personal | context | other
  *
  * Importance affects decay rate — high-importance facts resist pruning.
- * Category enables targeted retrieval (e.g. "only preferences" for
- * personalization) and shields decisions/preferences from decay-based
- * pruning entirely.
+ * Category enables targeted retrieval and shields decisions/preferences
+ * from decay-based pruning entirely.
  *
  * Resilience:
  *   - Turns are stored in SQLite BEFORE extraction — survives process death.
  *   - `extracted=0` turns are retried on next startup via processBacklog().
  *   - JSON parse failures retried up to maxRetries times.
- *   - shouldProcessTurn() filters trivial/noisy turns before hitting Ollama.
+ *   - shouldProcessTurn() filters trivial/noisy turns before hitting the LLM.
  */
 
-const { chat, tryParseJsonArray } = require('./lib/ollama.js');
+const brain = require('./lib/brain.js');
+const { ENGRAM_EXTRACTION } = require('./lib/prompts.js');
 const { shouldProcessTurn } = require('./lib/heuristics.js');
 const log = require('./lib/logger.js').make('extractor');
 
 const CATEGORIES = ['technical', 'decision', 'preference', 'personal', 'context', 'other'];
 
-const EXTRACT_PROMPT = `Extract 3-6 atomic, self-contained facts from this AI assistant turn.
-
-For each fact output a JSON object with:
-  "fact": the statement (under 30 words, stands alone without context)
-  "importance": 0.0 to 1.0
-    1.0 = permanent truth (a decision made, a hard constraint, a user preference)
-    0.7 = useful context (a tool chosen, an approach taken)
-    0.4 = situational detail (a step done, a value used)
-    0.1 = ephemeral (a greeting, a filler statement, a status update)
-  "category": one of: technical | decision | preference | personal | context | other
-
-Skip filler, greetings, and meta-commentary entirely.
-Output ONLY a JSON array of objects. No explanation, no markdown.
-
-Example:
-[
-  {"fact": "User prefers dark mode interfaces.", "importance": 0.9, "category": "preference"},
-  {"fact": "Redis was chosen over Memcached for session storage.", "importance": 0.8, "category": "decision"},
-  {"fact": "The deployment target is Ubuntu 22.04.", "importance": 0.7, "category": "technical"}
-]
-
-Turn to extract from:
-`;
-
 class Extractor {
   constructor(config, historyStore, embedder) {
     this.cfg = config.extraction;
-    this.ollamaUrl = config.embedding.ollamaUrl;
     this.history = historyStore;
     this.embedder = embedder;
     this._running = false;
@@ -138,13 +115,11 @@ class Extractor {
 
   async _callLLM(content) {
     const truncated = content.length > 2500 ? content.slice(0, 2500) + '...' : content;
-    const text = await chat(this.ollamaUrl, {
-      model: this.cfg.model,
-      messages: [{ role: 'user', content: EXTRACT_PROMPT + truncated }],
-      options: { temperature: 0.1, num_predict: 500 },
-      timeoutMs: this.cfg.timeoutMs,
-    });
-    return tryParseJsonArray(text);
+    const text = await brain.chat(
+      [{ role: 'user', content: ENGRAM_EXTRACTION + truncated }],
+      { maxTokens: 500, temperature: 0.1, timeoutMs: this.cfg.timeoutMs }
+    );
+    return brain.tryParseJsonArray(text);
   }
 }
 
