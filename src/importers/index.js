@@ -133,6 +133,25 @@ function writeToDb(characterName, { profile, directData }) {
   db.close();
 }
 
+/**
+ * Returns true if the arg looks like a file path or URL rather than a character name.
+ * Used to distinguish `anamnesis import NyzKh file.md` from `anamnesis import file.md`.
+ */
+function _looksLikeSource(arg) {
+  return (
+    arg.startsWith('http://') ||
+    arg.startsWith('https://') ||
+    arg.startsWith('./') ||
+    arg.startsWith('../') ||
+    arg.startsWith('/') ||
+    arg.startsWith('~') ||
+    /^[A-Za-z]:[\\\/]/.test(arg) || // Windows drive letter e.g. C:\ or C:/
+    arg.includes('/') ||
+    arg.includes('\\') ||
+    arg.includes('.')
+  );
+}
+
 async function runCli(args) {
   const sources = [];
   let intoName = null;
@@ -146,8 +165,15 @@ async function runCli(args) {
     else sources.push(args[i]);
   }
 
+  // Support positional syntax: anamnesis import <name> <file> [...]
+  // If the first positional arg doesn't look like a file or URL, treat it as
+  // the character name (equivalent to --into <name>).
+  if (!intoName && sources.length >= 1 && !_looksLikeSource(sources[0])) {
+    intoName = sources.shift();
+  }
+
   if (!sources.length) {
-    console.error('usage: anamnesis import <file|url> [...] [--into name]');
+    console.error('usage: anamnesis import <name> <file|url> [...]');
     process.exit(1);
   }
 
