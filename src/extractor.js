@@ -115,10 +115,11 @@ class Extractor {
 
   async _callLLM(content) {
     const truncated = content.length > 2500 ? content.slice(0, 2500) + '...' : content;
-    const text = await brain.chat(
-      [{ role: 'user', content: ENGRAM_EXTRACTION + truncated }],
-      { maxTokens: 500, temperature: 0.1, timeoutMs: this.cfg.timeoutMs }
-    );
+    const text = await brain.chat([{ role: 'user', content: ENGRAM_EXTRACTION + truncated }], {
+      maxTokens: 500,
+      temperature: 0.1,
+      timeoutMs: this.cfg.timeoutMs,
+    });
     return brain.tryParseJsonArray(text);
   }
 }

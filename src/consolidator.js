@@ -149,10 +149,11 @@ class Consolidator {
   async _generateScene(facts) {
     const factList = facts.map((f, i) => `${i + 1}. ${f}`).join('\n');
     try {
-      const text = await brain.chat(
-        [{ role: 'user', content: EPISODE_SCENE + factList }],
-        { maxTokens: 256, temperature: 0.2, timeoutMs: 90000 }
-      );
+      const text = await brain.chat([{ role: 'user', content: EPISODE_SCENE + factList }], {
+        maxTokens: 256,
+        temperature: 0.2,
+        timeoutMs: 90000,
+      });
       const parsed = brain.tryParseJsonObject(text);
       if (!parsed?.title || !parsed?.summary) return null;
       return { title: String(parsed.title), summary: String(parsed.summary) };

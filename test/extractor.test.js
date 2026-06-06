@@ -44,7 +44,11 @@ async function withMockBrain(chatFn, fn) {
       tryParseJsonArray: (text) => {
         const m = text.match(/\[[\s\S]*?\]/);
         if (!m) return null;
-        try { return JSON.parse(m[0]); } catch { return null; }
+        try {
+          return JSON.parse(m[0]);
+        } catch {
+          return null;
+        }
       },
       embeddingModel: () => 'Xenova/all-MiniLM-L6-v2',
       embed: async () => null,
@@ -136,11 +140,17 @@ test('Extractor._extractTurn skips facts shorter than 10 chars', async () => {
 test('Extractor._extractTurn handles LLM failure gracefully', async () => {
   const history = makeMockHistory();
   let marked = false;
-  history.markExtracted = () => { marked = true; };
-  history.insertMemcell = () => { throw new Error('should not be called'); };
+  history.markExtracted = () => {
+    marked = true;
+  };
+  history.insertMemcell = () => {
+    throw new Error('should not be called');
+  };
 
   await withMockBrain(
-    async () => { throw new Error('inference failed'); },
+    async () => {
+      throw new Error('inference failed');
+    },
     (Extractor) => {
       const e = new Extractor(makeConfig(), history, makeMockEmbedder());
       return e._extractTurn({

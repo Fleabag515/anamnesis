@@ -84,14 +84,11 @@ class ModelManager {
     return new Promise((resolve, reject) => {
       const u = new URL(url);
       const lib = u.protocol === 'https:' ? https : http;
-      const req = lib.get(
-        { hostname: u.hostname, path: u.pathname + u.search, headers },
-        (res) => {
-          const chunks = [];
-          res.on('data', (c) => chunks.push(c));
-          res.on('end', () => resolve({ statusCode: res.statusCode, body: Buffer.concat(chunks) }));
-        }
-      );
+      const req = lib.get({ hostname: u.hostname, path: u.pathname + u.search, headers }, (res) => {
+        const chunks = [];
+        res.on('data', (c) => chunks.push(c));
+        res.on('end', () => resolve({ statusCode: res.statusCode, body: Buffer.concat(chunks) }));
+      });
       req.on('error', reject);
     });
   }
@@ -120,7 +117,9 @@ class ModelManager {
         lastErr = err;
         if (attempt < delays.length) {
           const delay = delays[attempt];
-          log.warn(`download attempt ${attempt + 1} failed: ${err.message} — retrying in ${delay}ms`);
+          log.warn(
+            `download attempt ${attempt + 1} failed: ${err.message} — retrying in ${delay}ms`
+          );
           await new Promise((r) => setTimeout(r, delay));
         }
       }
@@ -167,14 +166,17 @@ class ProductionModelManager extends ModelManager {
   async _doHttpRequest(url, headers = {}) {
     return new Promise((resolve, reject) => {
       const u = new URL(url);
-      const req = https.get({ hostname: u.hostname, path: u.pathname + u.search, headers }, (res) => {
-        // Follow redirects
-        if ([301, 302, 307, 308].includes(res.statusCode) && res.headers.location) {
-          resolve(this._doHttpRequest(res.headers.location, headers));
-          return;
+      const req = https.get(
+        { hostname: u.hostname, path: u.pathname + u.search, headers },
+        (res) => {
+          // Follow redirects
+          if ([301, 302, 307, 308].includes(res.statusCode) && res.headers.location) {
+            resolve(this._doHttpRequest(res.headers.location, headers));
+            return;
+          }
+          resolve({ statusCode: res.statusCode, _stream: res });
         }
-        resolve({ statusCode: res.statusCode, _stream: res });
-      });
+      );
       req.on('error', reject);
     });
   }

@@ -117,7 +117,10 @@ test('brain.generate() wraps prompt as user message', async () => {
   const mockEngine = {
     isLoaded: () => true,
     load: async () => {},
-    chat: async (msgs) => { seen = msgs; return 'ok'; },
+    chat: async (msgs) => {
+      seen = msgs;
+      return 'ok';
+    },
     generate: async () => '',
   };
   const mockEmbedder = { _loaded: false, load: async () => {}, embed: async () => null };

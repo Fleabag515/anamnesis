@@ -41,10 +41,7 @@ test('tryParseJsonObject: plain object', () => {
 });
 
 test('tryParseJsonObject: object in prose', () => {
-  assert.deepEqual(
-    freshBrain().tryParseJsonObject('Sure: {"title":"x"} done.'),
-    { title: 'x' }
-  );
+  assert.deepEqual(freshBrain().tryParseJsonObject('Sure: {"title":"x"} done.'), { title: 'x' });
 });
 
 // ─── Embedding ────────────────────────────────────────────────────────────────

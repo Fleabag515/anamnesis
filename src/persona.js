@@ -251,10 +251,11 @@ class PersonaManager {
   async _extractProfile(rawContent) {
     const truncated = rawContent.slice(0, 3000);
     try {
-      const text = await brain.chat(
-        [{ role: 'user', content: PERSONA_EXTRACT + truncated }],
-        { maxTokens: 400, temperature: 0.1, timeoutMs: this.cfg.timeoutMs || 45000 }
-      );
+      const text = await brain.chat([{ role: 'user', content: PERSONA_EXTRACT + truncated }], {
+        maxTokens: 400,
+        temperature: 0.1,
+        timeoutMs: this.cfg.timeoutMs || 45000,
+      });
       const parsed = brain.tryParseJsonObject(text);
       if (!parsed) log.warn('persona: profile extraction returned non-JSON:', text.slice(0, 120));
       return parsed;
@@ -283,10 +284,11 @@ class PersonaManager {
 
     let result;
     try {
-      const text = await brain.chat(
-        [{ role: 'user', content: prompt }],
-        { maxTokens: 250, temperature: 0.1, timeoutMs: this.cfg.timeoutMs || 30000 }
-      );
+      const text = await brain.chat([{ role: 'user', content: prompt }], {
+        maxTokens: 250,
+        temperature: 0.1,
+        timeoutMs: this.cfg.timeoutMs || 30000,
+      });
       result = brain.tryParseJsonObject(text);
     } catch (err) {
       log.warn('persona: drift check LLM error:', err.message);
@@ -370,10 +372,11 @@ class PersonaManager {
 
     let newNotes;
     try {
-      newNotes = await brain.chat(
-        [{ role: 'user', content: prompt }],
-        { maxTokens: 200, temperature: 0.3, timeoutMs: this.cfg.timeoutMs || 45000 }
-      );
+      newNotes = await brain.chat([{ role: 'user', content: prompt }], {
+        maxTokens: 200,
+        temperature: 0.3,
+        timeoutMs: this.cfg.timeoutMs || 45000,
+      });
       newNotes = newNotes.trim().slice(0, maxChars);
     } catch (err) {
       log.warn('persona: evolution LLM error:', err.message);

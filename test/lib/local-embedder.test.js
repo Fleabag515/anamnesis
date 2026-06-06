@@ -62,7 +62,7 @@ test('LocalEmbedder: calling load() twice only calls factory once', async () => 
 
 test('LocalEmbedder: mean-pool across multiple sequence tokens', async () => {
   // 2 tokens, 4 dims: [[1,0,0,0],[0,0,0,1]] → mean = [0.5,0,0,0.5]
-  const rawData = new Float32Array([1, 0, 0, 0,  0, 0, 0, 1]);
+  const rawData = new Float32Array([1, 0, 0, 0, 0, 0, 0, 1]);
   const fakeOutput = { data: rawData, dims: [1, 2, 4] };
   const e = new LocalEmbedder({ _pipeline: async () => fakeOutput });
   e._loaded = true;

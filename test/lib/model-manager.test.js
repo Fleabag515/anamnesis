@@ -103,7 +103,9 @@ test('ModelManager: retries up to 3 times on network error, succeeds on 3rd', as
 test('ModelManager: throws after all retries fail', async () => {
   const mm = makeManager();
   mm._EXPECTED_SIZE = 10;
-  mm._doHttpRequest = async () => { throw new Error('always fails'); };
+  mm._doHttpRequest = async () => {
+    throw new Error('always fails');
+  };
   // Speed up retries for tests
   mm._RETRY_DELAYS_MS = [0, 0, 0];
   await assert.rejects(() => mm._download(), /always fails/);

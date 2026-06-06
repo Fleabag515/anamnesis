@@ -49,10 +49,7 @@ function _drainQueue() {
     let call = _engine.chat(item.messages, engineOpts);
     if (timeoutMs != null) {
       const timer = new Promise((_, rej) =>
-        setTimeout(
-          () => rej(new Error(`inference timed out after ${timeoutMs}ms`)),
-          timeoutMs
-        )
+        setTimeout(() => rej(new Error(`inference timed out after ${timeoutMs}ms`)), timeoutMs)
       );
       call = Promise.race([call, timer]);
     }

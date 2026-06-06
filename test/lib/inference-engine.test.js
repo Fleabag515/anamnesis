@@ -47,7 +47,9 @@ test('InferenceEngine: isLoaded() returns true after load()', async () => {
 
 test('InferenceEngine: GPU probe failure falls back to gpuLayers=0', async () => {
   const eng = new InferenceEngine({ _skipLoad: true, gpuLayerBudgetMB: 512 });
-  eng._probeGpuFreeMB = async () => { throw new Error('nvidia-smi not found'); };
+  eng._probeGpuFreeMB = async () => {
+    throw new Error('nvidia-smi not found');
+  };
   const layers = await eng._resolveGpuLayers();
   assert.equal(layers, 0);
 });
