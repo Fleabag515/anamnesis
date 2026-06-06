@@ -75,7 +75,10 @@ class InferenceEngine {
         this._llama = await getLlama(gpuLayers === 0 ? { gpu: false } : {});
       }
 
-      this._model = await this._llama.loadModel({ modelPath, gpuLayers });
+      // Normalize to forward slashes — node-llama-cpp's native code may reject
+      // Windows-style backslash paths even when Node.js itself handles them fine.
+      const normalizedPath = modelPath.replace(/\\/g, '/');
+      this._model = await this._llama.loadModel({ modelPath: normalizedPath, gpuLayers });
       this._ctx = await this._model.createContext({ contextSize: CONTEXT_SIZE });
       this._loaded = true;
       log.info(`model loaded: ${modelPath} (gpuLayers=${gpuLayers})`);

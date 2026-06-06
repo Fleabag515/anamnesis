@@ -4,11 +4,9 @@
 const fs = require('fs');
 const path = require('path');
 
-const DEFAULT_PATH = path.join(
-  process.env.HOME || require('os').homedir(),
-  '.anamnesis',
-  'registry.json'
-);
+// Always use os.homedir() — process.env.HOME is unreliable on Windows
+// (Git Bash sets HOME to a Unix-style path that differs from the actual homedir).
+const DEFAULT_PATH = path.join(require('os').homedir(), '.anamnesis', 'registry.json');
 
 class Registry {
   constructor(filePath = DEFAULT_PATH) {

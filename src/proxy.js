@@ -316,12 +316,14 @@ async function start(config = loadConfig()) {
       /* already closed */
     }
     log.info('shutdown complete');
-    process.exit(0);
+    // Do NOT call process.exit() here. When running inside the daemon (in-process),
+    // exiting would kill the entire daemon process. Callers that want process exit
+    // (standalone mode) do it themselves via the signal handlers below.
   }
 
   if (require.main === module) {
-    process.on('SIGTERM', () => shutdown('SIGTERM'));
-    process.on('SIGINT', () => shutdown('SIGINT'));
+    process.on('SIGTERM', () => shutdown('SIGTERM').then(() => process.exit(0)));
+    process.on('SIGINT', () => shutdown('SIGINT').then(() => process.exit(0)));
   }
 
   return { server, history, shutdown };
