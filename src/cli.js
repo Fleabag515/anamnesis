@@ -242,8 +242,7 @@ const commands = {
       }
     } else if (isWindows) {
       // ── ZIP install (Windows installer) ────────────────────────────────────
-      const REPO_URL =
-        'https://github.com/Fleabag515/anamnesis/archive/refs/heads/main.zip';
+      const REPO_URL = 'https://github.com/Fleabag515/anamnesis/archive/refs/heads/main.zip';
       const TmpZip = path.join(os.tmpdir(), 'anamnesis-update.zip');
       const TmpDir = path.join(os.tmpdir(), 'anamnesis-update');
 
@@ -273,9 +272,7 @@ const commands = {
         process.exit(1);
       }
     } else {
-      console.error(
-        'update failed: not a git repo. Re-run the installer from the README.'
-      );
+      console.error('update failed: not a git repo. Re-run the installer from the README.');
       process.exit(1);
     }
 
