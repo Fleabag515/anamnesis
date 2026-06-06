@@ -1,7 +1,11 @@
+'use strict';
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
-const Embedder = require('../src/embedder.js');
+// embedder is now a singleton — require it directly
+const embedder = require('../src/embedder.js');
+// cosine is still a static method on the constructor
+const Embedder = embedder.constructor;
 
 test('cosine: identical vectors => 1', () => {
   const v = new Float32Array([1, 2, 3, 4]);
@@ -43,4 +47,21 @@ test('cosine: monotonic w.r.t. similarity', () => {
   const close = new Float32Array([0.9, 0.1, 0]);
   const far = new Float32Array([0, 1, 0]);
   assert.ok(Embedder.cosine(q, close) > Embedder.cosine(q, far));
+});
+
+// ─── Singleton behaviour ──────────────────────────────────────────────────────
+
+test('embedder.model returns brain embedding model name', () => {
+  assert.equal(embedder.model, 'Xenova/all-MiniLM-L6-v2');
+});
+
+test('embedder.embed() returns null before brain is ready', async () => {
+  // brain not init'd in this test process — embed returns null gracefully
+  const result = await embedder.embed('hello');
+  assert.equal(result, null);
+});
+
+test('embedder.embed() returns null for empty string', async () => {
+  assert.equal(await embedder.embed(''), null);
+  assert.equal(await embedder.embed(null), null);
 });

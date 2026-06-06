@@ -1,45 +1,36 @@
+'use strict';
+
 /**
- * embedder.js — Ollama embedding client.
+ * embedder.js — embedding singleton backed by brain.js (local-embedder).
  *
- * Thin wrapper over Ollama's /api/embed. Exposes `.model` so callers can
- * tag stored vectors with the model that produced them — that way we can
- * skip cosine similarity against vectors from an incompatible model (which
- * would otherwise return arithmetic-noise values).
+ * Replaces the Ollama-based implementation. Delegates embed() to brain so
+ * the actual model (all-MiniLM-L6-v2) is loaded once at daemon startup.
+ *
+ * Callers (selector.js, extractor.js, consolidator.js, proxy.js) receive
+ * the exported singleton and call embedder.embed() / embedder.model —
+ * the interface is unchanged.
  */
 
-const { post } = require('./lib/ollama.js');
-const log = require('./lib/logger.js').make('embedder');
+const brain = require('./lib/brain.js');
 
 class Embedder {
-  constructor(ollamaUrl, model) {
-    this.ollamaUrl = ollamaUrl;
-    this.model = model;
+  /** Model name — used to tag stored vectors for compatibility checks. */
+  get model() {
+    return brain.embeddingModel();
   }
 
   /**
-   * Embed a single string. Returns Float32Array or null on failure.
-   * Failures are logged and swallowed — the caller decides whether a
-   * missing embedding is fatal (selector skips those rows in similarity).
+   * Embed a single string. Returns Float32Array or null when model not ready.
+   * Failures are logged inside brain and swallowed — callers handle null.
    */
   async embed(text) {
     if (!text) return null;
-    const body = JSON.stringify({ model: this.model, input: text });
-    try {
-      const raw = await post(this.ollamaUrl, '/api/embed', body, { timeoutMs: 30000 });
-      const data = JSON.parse(raw);
-      const vec = data.embeddings?.[0] ?? data.embedding;
-      if (!vec) return null;
-      return new Float32Array(vec);
-    } catch (err) {
-      log.warn('embed failed:', err.message);
-      return null;
-    }
+    return brain.embed(text);
   }
 
   /**
    * Cosine similarity between two Float32Arrays.
-   * Returns 0 for missing vectors or mismatched lengths so callers can
-   * always pass the result straight into a sort comparator.
+   * Returns 0 for missing vectors or mismatched lengths.
    */
   static cosine(a, b) {
     if (!a || !b || a.length !== b.length) return 0;
@@ -56,4 +47,4 @@ class Embedder {
   }
 }
 
-module.exports = Embedder;
+module.exports = new Embedder();
