@@ -15,6 +15,10 @@ test('buildConfig produces valid config shape', () => {
   assert.equal(cfg.upstream.apiKey, 'localqwen');
   assert.ok(cfg.history.dbPath.includes('mark'));
   assert.ok(cfg.context.tokenBudget > 0);
+  assert.equal(cfg.inference.gpuLayerBudgetMB, 512);
+  assert.equal(cfg.embedding, undefined, 'embedding section should be removed');
+  assert.equal(cfg.extraction.model, undefined, 'extraction.model should be removed');
+  assert.equal(cfg.foresight.model, undefined, 'foresight.model should be removed');
 });
 
 test('buildConfig sets persona.source.inline when description provided', () => {

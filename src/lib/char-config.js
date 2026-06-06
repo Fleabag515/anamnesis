@@ -19,14 +19,13 @@ const DEFAULTS = {
     minSceneSize: 2,
     decayPruneThreshold: 0.05,
   },
-  extraction: { model: 'qwen3:0.6b', maxRetries: 2, timeoutMs: 45000, startupBacklogLimit: 200 },
-  foresight: { model: 'qwen3:0.6b', maxRetries: 2, timeoutMs: 45000, startupBacklogLimit: 200 },
-  embedding: { ollamaUrl: 'http://127.0.0.1:11434', model: 'nomic-embed-cpu:latest' },
+  extraction: { maxRetries: 2, timeoutMs: 45000, startupBacklogLimit: 200 },
+  foresight: { maxRetries: 2, timeoutMs: 45000, startupBacklogLimit: 200 },
+  inference: { gpuLayerBudgetMB: 512 },
   history: { maxAgeDays: 90 },
 };
 
 const PERSONA_SHARED = {
-  model: 'qwen3:0.6b',
   timeoutMs: 45000,
   drift: { enabled: true, checkEveryNTurns: 4, driftThreshold: 0.55 },
   evolution: { enabled: true, consolidateAfterNObservations: 8, maxEvolutionChars: 600 },
@@ -69,7 +68,7 @@ function buildConfig({
   return {
     proxy: { port, host: '127.0.0.1' },
     upstream: { baseUrl: upstreamUrl, apiKey, disableThinking: true },
-    embedding: DEFAULTS.embedding,
+    inference: DEFAULTS.inference,
     extraction: DEFAULTS.extraction,
     context: DEFAULTS.context,
     memory: DEFAULTS.memory,
