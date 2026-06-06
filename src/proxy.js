@@ -37,8 +37,9 @@ const {
 } = require('./lib/proxy-helpers.js');
 const log = require('./lib/logger.js').make('anamnesis');
 
+const brain = require('./lib/brain.js');
 const HistoryStore = require('./history.js');
-const Embedder = require('./embedder.js');
+const embedder = require('./embedder.js'); // singleton
 const Selector = require('./selector.js');
 const Extractor = require('./extractor.js');
 const ForesightExtractor = require('./foresight.js');
@@ -50,8 +51,9 @@ function loadConfig() {
 }
 
 async function start(config = loadConfig()) {
+  brain.init(config); // start model download/load in background; chat() calls queue until ready
+
   const history = new HistoryStore(config.history.dbPath);
-  const embedder = new Embedder(config.embedding.ollamaUrl, config.embedding.model);
   const persona = new PersonaManager(config, history);
   await persona.init();
   const selector = new Selector(config, history, embedder, persona);
@@ -183,7 +185,7 @@ async function start(config = loadConfig()) {
           status: 'ok',
           ...stats,
           upstream: config.upstream.baseUrl,
-          embedding_model: config.embedding.model,
+          embedding_model: brain.embeddingModel(),
         })
       );
     }
@@ -295,7 +297,6 @@ async function start(config = loadConfig()) {
   server.listen(config.proxy.port, config.proxy.host, () => {
     log.info(`listening on ${config.proxy.host}:${config.proxy.port}`);
     log.info(`upstream: ${config.upstream.baseUrl}`);
-    log.info(`extraction model: ${config.extraction.model}`);
     log.info(
       `token budget: ${config.context.tokenBudget} | recency: ${config.context.recencyTurns} turns | slots: ${config.context.rotatingSlots}`
     );
