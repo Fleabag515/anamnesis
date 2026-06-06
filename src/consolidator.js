@@ -1,3 +1,5 @@
+'use strict';
+
 /**
  * consolidator.js — Episode building.
  *
@@ -13,24 +15,13 @@
  *   5. Update decay scores across all engrams, prune below threshold.
  *
  * Scheduling: self-rescheduling setTimeout chain with a `_running` guard so
- * a slow run can never overlap with the next tick (the previous setInterval
- * version could stack concurrent runs against the same session).
+ * a slow run can never overlap with the next tick.
  */
 
-const Embedder = require('./embedder.js');
+const brain = require('./lib/brain.js');
+const { EPISODE_SCENE } = require('./lib/prompts.js');
 const HistoryStore = require('./history.js');
-const { generate, tryParseJsonObject } = require('./lib/ollama.js');
 const log = require('./lib/logger.js').make('consolidator');
-
-const SCENE_PROMPT = `You are a memory organizer. Given a list of related facts, create:
-1. A short scene title (3-6 words, like a chapter heading)
-2. A single summary sentence tying the facts together
-
-Output ONLY valid JSON in this exact format:
-{"title": "...", "summary": "..."}
-
-Facts:
-`;
 
 class Consolidator {
   constructor(config, historyStore, embedder) {
@@ -59,8 +50,6 @@ class Consolidator {
     if (this._stopped) return;
     this._timer = setTimeout(async () => {
       if (this._running) {
-        // Belt-and-braces: should be unreachable because we await `run()`
-        // before scheduling the next timer, but guard regardless.
         this._scheduleNext(this._intervalMs);
         return;
       }
@@ -102,11 +91,9 @@ class Consolidator {
     if (cells.length < this.cfg.memory.minSceneSize) return;
 
     const currentModel = this.embedder.model;
+    const cosine = this.embedder.constructor.cosine;
     const decoded = cells
       .map((c) => ({ ...c, vec: HistoryStore.toFloat32(c.embedding) }))
-      // Skip cells whose embedding came from a different model — cosine
-      // across model families is meaningless. They'll re-cluster naturally
-      // once the next batch from the current model arrives.
       .filter((c) => c.vec && (!c.embedding_model || c.embedding_model === currentModel));
 
     const threshold = this.cfg.memory.sceneClusterThreshold;
@@ -119,7 +106,7 @@ class Consolidator {
       assigned.add(i);
       for (let j = i + 1; j < decoded.length; j++) {
         if (assigned.has(j)) continue;
-        const sim = Embedder.cosine(decoded[i].vec, decoded[j].vec);
+        const sim = cosine(decoded[i].vec, decoded[j].vec);
         if (sim >= threshold) {
           cluster.push(decoded[j]);
           assigned.add(j);
@@ -162,13 +149,11 @@ class Consolidator {
   async _generateScene(facts) {
     const factList = facts.map((f, i) => `${i + 1}. ${f}`).join('\n');
     try {
-      const text = await generate(this.cfg.embedding.ollamaUrl, {
-        model: this.cfg.extraction.model,
-        prompt: SCENE_PROMPT + factList,
-        options: { temperature: 0.2, num_predict: 256 },
-        timeoutMs: 90000,
-      });
-      const parsed = tryParseJsonObject(text);
+      const text = await brain.chat(
+        [{ role: 'user', content: EPISODE_SCENE + factList }],
+        { maxTokens: 256, temperature: 0.2, timeoutMs: 90000 }
+      );
+      const parsed = brain.tryParseJsonObject(text);
       if (!parsed?.title || !parsed?.summary) return null;
       return { title: String(parsed.title), summary: String(parsed.summary) };
     } catch {
