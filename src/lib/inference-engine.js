@@ -69,7 +69,10 @@ class InferenceEngine {
       } else {
         // Production — dynamic import because node-llama-cpp is ESM-only
         ({ getLlama } = await import('node-llama-cpp'));
-        this._llama = await getLlama();
+        // Pass gpu:false when budget is 0 to prevent CUDA initialisation entirely.
+        // With gpu:'auto' (the default), node-llama-cpp initialises CUDA even when
+        // gpuLayers=0, which aborts with a PTX toolchain mismatch on some systems.
+        this._llama = await getLlama(gpuLayers === 0 ? { gpu: false } : {});
       }
 
       this._model = await this._llama.loadModel({ modelPath, gpuLayers });
