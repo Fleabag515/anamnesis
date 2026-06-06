@@ -329,6 +329,137 @@ const commands = {
 };
 
 // ─── Aliases ──────────────────────────────────────────────────────────────────
+  async doctor() {
+    const http = require('http');
+    const ok   = (s) => console.log(`  ✓ ${s}`);
+    const warn = (s) => console.log(`  ⚠ ${s}`);
+    const fail = (s) => console.log(`  ✗ ${s}`);
+    console.log('\nanamnesis doctor\n');
+
+    // 1. Daemon
+    let daemonOk = false;
+    try {
+      const res = await client.status();
+      if (res.status === 200) { ok(`daemon running (uptime ${res.body.uptime}s)`); daemonOk = true; }
+      else fail('daemon not responding');
+    } catch { fail('daemon not running — start with: anamnesis start <name>'); }
+
+    // 2. Characters
+    if (daemonOk) {
+      const chars = (await client.listCharacters()).body.characters || [];
+      if (!chars.length) warn('no characters — create one with: anamnesis new');
+      for (const c of chars) {
+        const label = c.running ? '✓ active  ' : '⚠ inactive';
+        const cfgPath = path.join(os.homedir(), '.anamnesis', 'characters', c.name, 'config.json');
+        const hasConfig = fs.existsSync(cfgPath);
+        console.log(`  ${label} ${c.name} (port ${c.port})${hasConfig ? '' : '  — ✗ MISSING config.json'}`);
+        if (!hasConfig) { fail(`    re-create with: anamnesis new`); continue; }
+
+        try {
+          const cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
+          // Upstream reachability
+          const upUrl = new URL(cfg.upstream?.baseUrl || '');
+          await new Promise((resolve, reject) => {
+            const req = http.get({ hostname: upUrl.hostname, port: upUrl.port || 80,
+              path: '/health', timeout: 3000 }, resolve);
+            req.on('error', reject);
+            req.on('timeout', () => { req.destroy(); reject(new Error('timeout')); });
+          }).then(() => ok(`    upstream reachable: ${cfg.upstream.baseUrl}`))
+            .catch(() => warn(`    upstream unreachable: ${cfg.upstream.baseUrl}`));
+          // Embedding model mismatch
+          const dbPath = cfg.history?.dbPath?.replace(/^~/, os.homedir());
+          if (dbPath && fs.existsSync(dbPath)) {
+            const Database = require('better-sqlite3');
+            const db = new Database(dbPath, { readonly: true });
+            const rows = db.prepare(
+              'SELECT DISTINCT embedding_model FROM engrams WHERE embedding_model IS NOT NULL LIMIT 5'
+            ).all();
+            db.close();
+            const brain = require('./lib/brain.js');
+            const cur = brain.embeddingModel();
+            const bad = rows.filter(r => r.embedding_model && r.embedding_model !== cur);
+            if (bad.length)
+              warn(`    embedding mismatch — stored: ${[...new Set(bad.map(r=>r.embedding_model))].join(', ')} | current: ${cur} — run: anamnesis reembed ${c.name}`);
+            else
+              ok(`    embeddings consistent (${cur})`);
+          }
+        } catch {}
+      }
+    }
+
+    // 3. Log file
+    const logPath = path.join(os.homedir(), '.anamnesis', 'daemon.log');
+    fs.existsSync(logPath) ? ok(`log: ${logPath}`) : warn(`no log file yet (created on first start)`);
+
+    // 4. Startup registration
+    if (process.platform === 'win32') {
+      try { require('child_process').execSync('schtasks /Query /TN "Anamnesis Daemon"', { stdio: 'pipe' });
+        ok('registered as Task Scheduler logon task'); }
+      catch { warn('not a startup task — run: anamnesis install'); }
+    } else {
+      try { require('child_process').execSync('systemctl is-enabled anamnesis', { stdio: 'pipe' });
+        ok('systemd service enabled'); }
+      catch { warn('not a systemd service — run: sudo anamnesis install'); }
+    }
+    console.log('');
+  },
+
+  async reembed([name]) {
+    if (!name) die('usage: anamnesis reembed <name>');
+    const cfgPath = path.join(os.homedir(), '.anamnesis', 'characters', name, 'config.json');
+    if (!fs.existsSync(cfgPath)) die(`character '${name}' not found`);
+    const cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
+    const dbPath = (cfg.history?.dbPath || '').replace(/^~/, os.homedir());
+    if (!fs.existsSync(dbPath)) die(`no database found at ${dbPath}`);
+
+    const Database = require('better-sqlite3');
+    const brain = require('./lib/brain.js');
+    brain.init(cfg);
+    // Wait for embedder to load
+    const deadline = Date.now() + 60000;
+    while (Date.now() < deadline) {
+      try { await brain.embed('test'); break; } catch { await new Promise(r => setTimeout(r, 500)); }
+    }
+    const currentModel = brain.embeddingModel();
+    console.log(`re-embedding with model: ${currentModel}`);
+
+    const db = new Database(dbPath);
+    db.pragma('journal_mode = WAL');
+    const rows = db.prepare(
+      'SELECT id, content FROM engrams WHERE embedding_model != ? OR embedding_model IS NULL'
+    ).all(currentModel);
+    console.log(`${rows.length} engram(s) need re-embedding...`);
+
+    const upd = db.prepare('UPDATE engrams SET embedding=?, embedding_model=? WHERE id=?');
+    let done = 0;
+    for (const row of rows) {
+      try {
+        const vec = await brain.embed(row.content);
+        if (vec) {
+          upd.run(Buffer.from(new Float32Array(vec).buffer), currentModel, row.id);
+          done++;
+          if (done % 50 === 0) process.stdout.write(`  ${done}/${rows.length}\r`);
+        }
+      } catch { /* skip */ }
+    }
+
+    const epRows = db.prepare(
+      'SELECT id, title, summary FROM episodes WHERE embedding_model != ? OR embedding_model IS NULL'
+    ).all(currentModel);
+    console.log(`\n${epRows.length} episode(s) need re-embedding...`);
+    const updEp = db.prepare('UPDATE episodes SET embedding=?, embedding_model=? WHERE id=?');
+    for (const row of epRows) {
+      try {
+        const vec = await brain.embed(`${row.title}: ${row.summary}`);
+        if (vec) updEp.run(Buffer.from(new Float32Array(vec).buffer), currentModel, row.id);
+      } catch { /* skip */ }
+    }
+
+    db.close();
+    console.log(`\n✓ re-embedded ${done}/${rows.length} engrams and ${epRows.length} episodes`);
+    console.log('  restart the character to apply: anamnesis restart ' + name);
+  },
+
 commands.ls = commands.list;
 commands.ps = commands.status;
 commands.run = commands.start;

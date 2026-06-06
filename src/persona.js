@@ -256,7 +256,7 @@ class PersonaManager {
       const text = await brain.chat([{ role: 'user', content: PERSONA_EXTRACT + truncated }], {
         maxTokens: 400,
         temperature: 0.1,
-        timeoutMs: this.cfg.timeoutMs || 45000,
+        timeoutMs: this.cfg.timeoutMs || 120000,
       });
       const parsed = brain.tryParseJsonObject(text);
       if (!parsed) log.warn('persona: profile extraction returned non-JSON:', text.slice(0, 120));
@@ -289,7 +289,7 @@ class PersonaManager {
       const text = await brain.chat([{ role: 'user', content: prompt }], {
         maxTokens: 250,
         temperature: 0.1,
-        timeoutMs: this.cfg.timeoutMs || 30000,
+        timeoutMs: this.cfg.timeoutMs || 120000,
       });
       result = brain.tryParseJsonObject(text);
     } catch (err) {
@@ -377,7 +377,7 @@ class PersonaManager {
       newNotes = await brain.chat([{ role: 'user', content: prompt }], {
         maxTokens: 200,
         temperature: 0.3,
-        timeoutMs: this.cfg.timeoutMs || 45000,
+        timeoutMs: this.cfg.timeoutMs || 120000,
       });
       newNotes = newNotes.trim().slice(0, maxChars);
     } catch (err) {

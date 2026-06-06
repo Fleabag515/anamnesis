@@ -49,30 +49,53 @@ WantedBy=multi-user.target
 }
 
 async function installWindows() {
+  // Use Task Scheduler (schtasks) — no extra dependencies, works without elevation
+  // for per-user ONLOGON tasks. Falls back to a warning if schtasks isn't available.
+  const { execSync } = require('child_process');
+  const taskName = 'Anamnesis Daemon';
+
+  // Delete existing task silently before recreating
+  try { execSync(`schtasks /Delete /TN "${taskName}" /F`, { stdio: 'pipe' }); } catch {}
+
+  const xmlPath = path.join(os.tmpdir(), 'anamnesis-task.xml');
+  const xml = `<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <Triggers><LogonTrigger><Enabled>true</Enabled></LogonTrigger></Triggers>
+  <Actions Context="Author">
+    <Exec>
+      <Command>${NODE_BIN.replace(/\\/g, '\\\\')}</Command>
+      <Arguments>${DAEMON_JS.replace(/\\/g, '\\\\')}</Arguments>
+      <WorkingDirectory>${path.dirname(DAEMON_JS).replace(/\\/g, '\\\\')}</WorkingDirectory>
+    </Exec>
+  </Actions>
+  <Principals>
+    <Principal id="Author">
+      <LogonType>InteractiveToken</LogonType>
+      <RunLevel>LeastPrivilege</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
+  </Settings>
+</Task>`;
+
+  fs.writeFileSync(xmlPath, xml, 'utf16le');
   try {
-    require('child_process').execSync('net session', { stdio: 'pipe' });
-  } catch {
-    console.error(
-      'error: anamnesis install requires Administrator — right-click and "Run as Administrator"'
-    );
+    execSync(`schtasks /Create /TN "${taskName}" /XML "${xmlPath}" /F`, { stdio: 'pipe' });
+    execSync(`schtasks /Run /TN "${taskName}"`, { stdio: 'pipe' });
+    fs.unlinkSync(xmlPath);
+    console.log('✓ Anamnesis daemon registered as Task Scheduler logon task and started');
+    console.log('  It will auto-start on every login.');
+    console.log(`  To check: schtasks /Query /TN "${taskName}"`);
+    console.log(`  Logs: ${path.join(os.homedir(), '.anamnesis', 'daemon.log')}`);
+  } catch (err) {
+    console.error('error: failed to create scheduled task:', err.message);
+    console.error('Try running as Administrator, or start manually: anamnesis start <name>');
     process.exit(1);
   }
-  let Service;
-  try {
-    ({ Service } = require('node-windows'));
-  } catch {
-    console.error('node-windows not available — run: npm install node-windows');
-    process.exit(1);
-  }
-  const svc = new Service({ name: 'Anamnesis', script: DAEMON_JS });
-  await new Promise((resolve) => {
-    svc.on('install', () => {
-      svc.start();
-      resolve();
-    });
-    svc.install();
-  });
-  console.log('✓ Anamnesis Windows Service installed and started');
 }
 
 async function uninstall() {
@@ -108,18 +131,17 @@ function uninstallLinux() {
 }
 
 async function uninstallWindows() {
-  let Service;
+  const { execSync } = require('child_process');
+  const taskName = 'Anamnesis Daemon';
   try {
-    ({ Service } = require('node-windows'));
+    execSync(`schtasks /End /TN "${taskName}"`, { stdio: 'pipe' });
+  } catch {}
+  try {
+    execSync(`schtasks /Delete /TN "${taskName}" /F`, { stdio: 'pipe' });
+    console.log('✓ Anamnesis scheduled task removed (data preserved)');
   } catch {
-    return;
+    console.log('No scheduled task found — nothing to remove');
   }
-  const svc = new Service({ name: 'Anamnesis', script: DAEMON_JS });
-  await new Promise((resolve) => {
-    svc.on('uninstall', resolve);
-    svc.uninstall();
-  });
-  console.log('✓ Anamnesis Windows Service uninstalled (data preserved)');
 }
 
 module.exports = { install, uninstall };

@@ -268,16 +268,17 @@ class HistoryStore {
       .run(sessionKey, turnId, content, blob, importance, cat, embeddingModel).lastInsertRowid;
   }
 
-  getUnclusteredMemcells(sessionKey, limit = 100) {
+  getUnclusteredMemcells(_sessionKey, limit = 100) {
+    // Cross-session: consolidate all unscened engrams regardless of session origin.
     return this.db
       .prepare(
         `
       SELECT id, content, embedding, embedding_model, importance FROM engrams
-      WHERE session_key=? AND scene_id IS NULL
+      WHERE scene_id IS NULL
       ORDER BY created_at ASC LIMIT ?
     `
       )
-      .all(sessionKey, limit);
+      .all(limit);
   }
 
   getAllMemcells(sessionKey) {

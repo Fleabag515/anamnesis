@@ -137,7 +137,9 @@ class Selector {
       const relevant = scenes
         .map((s) => {
           if (s.embedding_model && s.embedding_model !== currentModel) {
-            return { ...s, sim: 0 };
+            // Model mismatch: can't compare vectors — assign a low but non-zero
+            // default so older episodes still surface rather than disappearing.
+            return { ...s, sim: 0.2 };
           }
           const sVec = HistoryStore.toFloat32(s.embedding);
           const sim = sVec ? Embedder.constructor.cosine(queryVec, sVec) : 0;
@@ -188,7 +190,7 @@ class Selector {
     const scored = scenes
       .map((s) => {
         if (s.embedding_model && s.embedding_model !== currentModel) {
-          return { ...s, weightedSim: 0 };
+          return { ...s, weightedSim: 0.2 * (0.7 + s.avg_importance * 0.3) };
         }
         const sVec = HistoryStore.toFloat32(s.embedding);
         const sim = sVec ? Embedder.constructor.cosine(queryVec, sVec) : 0;
@@ -220,7 +222,7 @@ class Selector {
       .map((t) => {
         const full = turnMap.get(t.id);
         if (full?.embedding_model && full.embedding_model !== currentModel) {
-          return { ...t, score: (full?.importance ?? 0.5) * 0.3 };
+          return { ...t, score: (full?.importance ?? 0.5) * 0.5 };
         }
         const tVec = full?.embedding ? HistoryStore.toFloat32(full.embedding) : null;
         const sim = tVec ? Embedder.constructor.cosine(queryVec, tVec) : 0.3;
