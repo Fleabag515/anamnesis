@@ -140,7 +140,7 @@ class Selector {
             return { ...s, sim: 0 };
           }
           const sVec = HistoryStore.toFloat32(s.embedding);
-          const sim = sVec ? Embedder.cosine(queryVec, sVec) : 0;
+          const sim = sVec ? Embedder.constructor.cosine(queryVec, sVec) : 0;
           return { ...s, sim };
         })
         .filter((s) => s.sim >= INJECTION_MIN_SIM)
@@ -191,7 +191,7 @@ class Selector {
           return { ...s, weightedSim: 0 };
         }
         const sVec = HistoryStore.toFloat32(s.embedding);
-        const sim = sVec ? Embedder.cosine(queryVec, sVec) : 0;
+        const sim = sVec ? Embedder.constructor.cosine(queryVec, sVec) : 0;
         return { ...s, weightedSim: sim * (0.7 + s.avg_importance * 0.3) };
       })
       .sort((a, b) => b.weightedSim - a.weightedSim)
@@ -223,7 +223,7 @@ class Selector {
           return { ...t, score: (full?.importance ?? 0.5) * 0.3 };
         }
         const tVec = full?.embedding ? HistoryStore.toFloat32(full.embedding) : null;
-        const sim = tVec ? Embedder.cosine(queryVec, tVec) : 0.3;
+        const sim = tVec ? Embedder.constructor.cosine(queryVec, tVec) : 0.3;
         const imp = full?.importance ?? 0.5;
         return { ...t, score: sim * 0.7 + imp * 0.3 };
       })
@@ -252,7 +252,7 @@ class Selector {
           return { ...t, score: 0 };
         }
         const tVec = HistoryStore.toFloat32(t.embedding);
-        const sim = tVec && queryVec ? Embedder.cosine(queryVec, tVec) : 0;
+        const sim = tVec && queryVec ? Embedder.constructor.cosine(queryVec, tVec) : 0;
         return { ...t, score: sim };
       })
       .sort((a, b) => b.score - a.score);

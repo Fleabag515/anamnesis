@@ -236,6 +236,7 @@ async function start(config = loadConfig()) {
             enable_thinking: false,
           };
         }
+        log.info('MSGS OUT: ' + JSON.stringify(selectedMessages.map(m => m.role + ':' + m.content.slice(0,80))));
         const rewrittenBody = Buffer.from(JSON.stringify(rewritten));
         const headers = buildUpstreamHeaders(req.headers, {
           upstreamApiKey: config.upstream.apiKey,
