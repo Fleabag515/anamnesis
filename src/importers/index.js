@@ -8,6 +8,8 @@ const http = require('http');
 const os = require('os');
 
 const { detectFormat } = require('./detect.js');
+const brain = require('../lib/brain.js');
+const { IMPORT_EXTRACTION } = require('../lib/prompts.js');
 const log = require('../lib/logger.js').make('importer');
 
 const ADAPTERS = {
@@ -45,24 +47,14 @@ async function loadSource(source) {
   return { filename: path.basename(source), buf: fs.readFileSync(source) };
 }
 
-const EXTRACT_PROFILE_PROMPT = `You are extracting a character profile from source material.
-Return ONLY valid JSON with these fields (all optional, omit if unknown):
-{ "name": string, "personality": string, "speaking_style": string, "backstory": string, "relationships": string, "other": string }
-No markdown fences. No explanation.`;
-
-async function llmExtract(text, ollamaUrl = 'http://127.0.0.1:11434', model = 'qwen3:0.6b') {
-  const { chat } = require('../lib/ollama.js');
-  const messages = [
-    { role: 'system', content: EXTRACT_PROFILE_PROMPT },
-    { role: 'user', content: text.slice(0, 12000) },
-  ];
-  const timeoutMs = 30000;
-  const result = await Promise.race([
-    chat(ollamaUrl, model, messages, false),
-    new Promise((_, rej) =>
-      setTimeout(() => rej(new Error('LLM extraction timed out after 30s')), timeoutMs)
-    ),
-  ]);
+async function llmExtract(text) {
+  const result = await brain.chat(
+    [
+      { role: 'system', content: IMPORT_EXTRACTION },
+      { role: 'user', content: text.slice(0, 12000) },
+    ],
+    { maxTokens: 500, temperature: 0.1, timeoutMs: 30000 }
+  );
   try {
     return JSON.parse(result);
   } catch {
