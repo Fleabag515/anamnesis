@@ -1,6 +1,6 @@
 {
   "name": "anamnesis",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "Anamnesis — self-organizing memory proxy for LLM agents. MemCell extraction, MemScene consolidation, scene-guided context retrieval, foresight extraction.",
   "main": "src/proxy.js",
   "bin": {
