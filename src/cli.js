@@ -326,9 +326,6 @@ const commands = {
 
     console.log('updated — restart active characters: anamnesis restart');
   },
-};
-
-// ─── Aliases ──────────────────────────────────────────────────────────────────
   async doctor() {
     const http = require('http');
     const ok   = (s) => console.log(`  ✓ ${s}`);
@@ -460,6 +457,9 @@ const commands = {
     console.log('  restart the character to apply: anamnesis restart ' + name);
   },
 
+};
+
+// ─── Aliases ──────────────────────────────────────────────────────────────────
 commands.ls = commands.list;
 commands.ps = commands.status;
 commands.run = commands.start;
