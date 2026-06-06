@@ -4,7 +4,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { extract } = require('../../src/importers/odysseus.js');
 
-test('extracts memories as direct memcells', () => {
+test('extracts memories as direct engrams', () => {
   const data = {
     memories: [
       { id: 'a1', text: 'user likes coffee', timestamp: 1000, session_id: 's1' },
@@ -13,8 +13,8 @@ test('extracts memories as direct memcells', () => {
   };
   const result = extract(Buffer.from(JSON.stringify(data)));
   assert.equal(result.direct, true);
-  assert.equal(result.data.memcells.length, 2);
-  assert.equal(result.data.memcells[0].content, 'user likes coffee');
+  assert.equal(result.data.engrams.length, 2);
+  assert.equal(result.data.engrams[0].content, 'user likes coffee');
 });
 
 test('returns summary text for preview', () => {

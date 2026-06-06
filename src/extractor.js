@@ -1,5 +1,5 @@
 /**
- * extractor.js — MemCell extraction with importance + category scoring.
+ * extractor.js — Engram extraction with importance + category scoring.
  *
  * Each assistant turn is decomposed into atomic facts. Each fact gets:
  *   - importance: 0.0–1.0 (how durable/useful is this fact?)
@@ -133,7 +133,7 @@ class Extractor {
 
     this.history.markExtracted(turn.id);
     if (count > 0)
-      log.info(`turn ${turn.id} → ${count} memcell(s) (session=${turn.session_key.slice(0, 8)})`);
+      log.info(`turn ${turn.id} → ${count} engram(s) (session=${turn.session_key.slice(0, 8)})`);
   }
 
   async _callLLM(content) {

@@ -1,16 +1,16 @@
 /**
- * consolidator.js — MemScene building.
+ * consolidator.js — Episode building.
  *
- * Periodically clusters unclustered MemCells into thematic MemScenes.
+ * Periodically clusters unclustered Engrams into thematic Episodes.
  * Uses cosine similarity to group related facts, then generates a title +
  * summary for each scene via an LLM call.
  *
  * Algorithm:
- *   1. Fetch all unclustered memcells for each active session.
+ *   1. Fetch all unclustered engrams for each active session.
  *   2. Build similarity graph between cells (cosine, single pass).
  *   3. Greedily cluster by sceneClusterThreshold.
- *   4. For each cluster ≥ minSceneSize: generate title+summary, upsert MemScene.
- *   5. Update decay scores across all memcells, prune below threshold.
+ *   4. For each cluster ≥ minSceneSize: generate title+summary, upsert Episode.
+ *   5. Update decay scores across all engrams, prune below threshold.
  *
  * Scheduling: self-rescheduling setTimeout chain with a `_running` guard so
  * a slow run can never overlap with the next tick (the previous setInterval
@@ -78,7 +78,7 @@ class Consolidator {
 
   async run() {
     const sessions = this.history.db
-      .prepare('SELECT DISTINCT session_key FROM memcells WHERE scene_id IS NULL')
+      .prepare('SELECT DISTINCT session_key FROM engrams WHERE scene_id IS NULL')
       .all()
       .map((r) => r.session_key);
 
@@ -90,7 +90,7 @@ class Consolidator {
         this.cfg.memory.decayPruneThreshold
       );
       if (pruned > 0)
-        log.info(`session=${sessionKey.slice(0, 8)} pruned ${pruned} decayed memcell(s)`);
+        log.info(`session=${sessionKey.slice(0, 8)} pruned ${pruned} decayed engram(s)`);
     }
   }
 
@@ -155,7 +155,7 @@ class Consolidator {
 
     if (sceneCount > 0)
       log.info(
-        `session=${sessionKey.slice(0, 8)} built ${sceneCount} new scene(s) from ${cells.length} memcell(s)`
+        `session=${sessionKey.slice(0, 8)} built ${sceneCount} new scene(s) from ${cells.length} engram(s)`
       );
   }
 

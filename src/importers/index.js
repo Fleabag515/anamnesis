@@ -121,7 +121,7 @@ function writeToDb(characterName, { profile, directData }) {
   const db = new Database(dbPath);
   db.pragma('journal_mode = WAL');
   const insert = db.prepare(`
-    INSERT OR IGNORE INTO memcells (session_key, content, category, decay_score, created_at)
+    INSERT OR IGNORE INTO engrams (session_key, content, category, decay_score, created_at)
     VALUES (?, ?, ?, ?, ?)
   `);
   const importMany = db.transaction((cells) => {
@@ -136,7 +136,7 @@ function writeToDb(characterName, { profile, directData }) {
     }
   });
   for (const d of directData) {
-    if (d.memcells) importMany(d.memcells);
+    if (d.engrams) importMany(d.engrams);
   }
   db.close();
 }

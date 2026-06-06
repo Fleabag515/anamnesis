@@ -4,7 +4,7 @@
  * Two-stage pipeline inspired by EverMemOS and claude-mem's before_prompt_build:
  *
  * Stage 1 — System-message injection:
- *   Find top relevant MemScenes, build a compact <memory> block, append it
+ *   Find top relevant Episodes, build a compact <memory> block, append it
  *   to the last system message. The model is explicitly *told* what it
  *   already knows. Only scenes above INJECTION_MIN_SIM are included, which
  *   prevents the "skiptracer" problem (irrelevant past context leaking in).
@@ -208,7 +208,7 @@ class Selector {
       this.history.bumpSceneRecall(scene.id);
       let ids;
       try {
-        ids = JSON.parse(scene.memcell_ids);
+        ids = JSON.parse(scene.engram_ids);
       } catch {
         continue;
       }

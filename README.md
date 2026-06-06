@@ -85,11 +85,11 @@ Turn received
     │
     ├─→ Store raw turn + embedding (sync, crash-safe)
     │
-    └─→ [background] MemCell extraction
+    └─→ [background] Engram extraction
               │
               ├─→ Foresight scan in parallel
               │
-              └─→ [periodic] MemScene consolidation
+              └─→ [periodic] Episode consolidation
                       │
                       └─→ Decay scoring + pruning
 ```
@@ -99,7 +99,7 @@ Turn received
 ```
 Query embedding
     │
-    ├─→ Score all MemScenes by cosine similarity
+    ├─→ Score all Episodes by cosine similarity
     │       └─→ Expand top scenes → constituent turn IDs
     │               └─→ Rank by similarity + importance, fill token budget
     │
@@ -117,7 +117,7 @@ Context injected:
 | Retrieval             | Recency only        | Scene-guided cosine similarity          |
 | Memory structure      | Flat                | Hierarchical (turn → cell → scene)      |
 | Forgetting            | Hard cutoff         | Soft decay by age + recall frequency    |
-| Background processing | None                | MemCell + Foresight extraction          |
+| Background processing | None                | Engram + Foresight extraction           |
 | Streaming             | Native              | Native SSE pass-through                 |
 
 ## Importing Memories
@@ -129,7 +129,7 @@ anamnesis import mycharacter /path/to/chatlog.txt
 anamnesis import mycharacter /path/to/export.json
 ```
 
-Supported formats: plain text, SillyTavern exports, Character.AI exports, Odysseus exports, and prior Anamnesis exports.
+Supported formats: plain text or markdown files (character sheets, memory logs, SOUL.md / persona files from OpenClaw, Hermes, or similar agents), SillyTavern exports, Character.AI exports, Odysseus exports, prior Anamnesis exports, and similar structured or unstructured sources. If the format isn't directly recognised, an LLM pass extracts whatever memories it can find.
 
 ## Character Config
 
@@ -142,7 +142,7 @@ Each character's `config.json` controls its behaviour. Key settings:
 | `upstream.apiKey`                | _(blank)_                | Bearer token sent upstream. Empty = pass client's own `Authorization` through |
 | `upstream.disableThinking`       | `true`                   | Suppress thinking tokens for Qwen3-style models                               |
 | `embedding.model`                | `nomic-embed-cpu:latest` | Ollama embedding model                                                        |
-| `extraction.model`               | `qwen3:0.6b`             | Small LLM for memcell extraction                                              |
+| `extraction.model`               | `qwen3:0.6b`             | Small LLM for engram extraction                                               |
 | `foresight.model`                | `qwen3:0.6b`             | Small LLM for intention extraction                                            |
 | `context.tokenBudget`            | `50000`                  | Total token budget                                                            |
 | `context.recencyTurns`           | `8`                      | Recent turns always included verbatim                                         |

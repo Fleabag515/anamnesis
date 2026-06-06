@@ -15,7 +15,7 @@
  *                       final assistant content from delta frames.
  *      - non-streaming: buffer upstream, return, then parse content.
  *   4. Persist the assistant turn + kick off background extraction
- *      (memcell + foresight, both non-blocking).
+ *      (engram + foresight, both non-blocking).
  *
  * Graceful shutdown (SIGTERM/SIGINT):
  *   - Stop the consolidator timer

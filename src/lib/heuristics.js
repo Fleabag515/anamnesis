@@ -1,7 +1,7 @@
 /**
  * lib/heuristics.js — pre-LLM filters for which turns are worth processing.
  *
- * Used by both the memcell extractor and the foresight scanner so they share
+ * Used by both the engram extractor and the foresight scanner so they share
  * one definition of "worth an Ollama call".
  */
 

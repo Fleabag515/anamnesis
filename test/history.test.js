@@ -39,7 +39,7 @@ maybeTest('schema: init creates expected tables and columns', () => {
     assert.ok(turnsCols.includes('embedding_model'), 'turns.embedding_model must exist');
 
     const cellsCols = h.db
-      .prepare('PRAGMA table_info(memcells)')
+      .prepare('PRAGMA table_info(engrams)')
       .all()
       .map((c) => c.name);
     assert.ok(cellsCols.includes('importance'));
@@ -47,7 +47,7 @@ maybeTest('schema: init creates expected tables and columns', () => {
     assert.ok(cellsCols.includes('embedding_model'));
 
     const sceneCols = h.db
-      .prepare('PRAGMA table_info(memscenes)')
+      .prepare('PRAGMA table_info(episodes)')
       .all()
       .map((c) => c.name);
     assert.ok(sceneCols.includes('avg_importance'));
@@ -149,11 +149,11 @@ maybeTest('decay: high-importance cell decays slower than low-importance', () =>
     const cHi = h.insertMemcell('s', t, 'high', null, 1.0, 'other', 'm');
     // Backdate both 60 days so decay can take effect.
     const old = Math.floor(Date.now() / 1000) - 60 * 86400;
-    h.db.prepare('UPDATE memcells SET created_at=? WHERE id IN (?,?)').run(old, cLo, cHi);
+    h.db.prepare('UPDATE engrams SET created_at=? WHERE id IN (?,?)').run(old, cLo, cHi);
 
     h.updateDecayScores('s');
     const rows = h.db
-      .prepare('SELECT id, decay_score FROM memcells WHERE id IN (?,?)')
+      .prepare('SELECT id, decay_score FROM engrams WHERE id IN (?,?)')
       .all(cLo, cHi);
     const lo = rows.find((r) => r.id === cLo).decay_score;
     const hi = rows.find((r) => r.id === cHi).decay_score;
@@ -174,7 +174,7 @@ maybeTest('prune respects category exemption', () => {
     const cPref = h.insertMemcell('s', t, 'pref', null, 0.1, 'preference', 'm');
 
     // Set decay_score below threshold for all three.
-    h.db.prepare('UPDATE memcells SET decay_score=0.01').run();
+    h.db.prepare('UPDATE engrams SET decay_score=0.01').run();
     const pruned = h.pruneDecayedMemcells('s', 0.05);
     assert.equal(pruned, 1, 'only the "other" cell should be pruned');
 

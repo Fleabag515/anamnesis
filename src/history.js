@@ -3,14 +3,14 @@
  *
  * Schema overview:
  *   turns       — every prompt/response, raw text + embedding + token estimate.
- *                 `extracted` flags memcell-extraction status; `foresight_scanned`
+ *                 `extracted` flags engram-extraction status; `foresight_scanned`
  *                 flags future-intention scan status. These are *independent*
  *                 because the two extractors run in parallel and shouldn't
  *                 starve each other.
- *   memcells    — atomic facts derived from assistant turns. `embedding_model`
+ *   engrams    — atomic facts derived from assistant turns. `embedding_model`
  *                 records which model produced the vector so we never compare
  *                 vectors from different model families.
- *   memscenes   — thematic clusters of memcells (turn → cell → scene).
+ *   episodes   — thematic clusters of engrams (turn → cell → scene).
  *   foresights  — extracted intentions / future plans.
  */
 
@@ -47,7 +47,7 @@ class HistoryStore {
         created_at        INTEGER NOT NULL DEFAULT (unixepoch())
       );
 
-      CREATE TABLE IF NOT EXISTS memcells (
+      CREATE TABLE IF NOT EXISTS engrams (
         id            INTEGER PRIMARY KEY AUTOINCREMENT,
         turn_id       INTEGER REFERENCES turns(id) ON DELETE CASCADE,
         session_key   TEXT    NOT NULL,
@@ -59,13 +59,13 @@ class HistoryStore {
         created_at    INTEGER NOT NULL DEFAULT (unixepoch())
       );
 
-      CREATE TABLE IF NOT EXISTS memscenes (
+      CREATE TABLE IF NOT EXISTS episodes (
         id            INTEGER PRIMARY KEY AUTOINCREMENT,
         session_key   TEXT    NOT NULL,
         title         TEXT    NOT NULL,
         summary       TEXT    NOT NULL,
         embedding     BLOB,
-        memcell_ids   TEXT    NOT NULL DEFAULT '[]',
+        engram_ids   TEXT    NOT NULL DEFAULT '[]',
         recall_count  INTEGER NOT NULL DEFAULT 0,
         created_at    INTEGER NOT NULL DEFAULT (unixepoch()),
         updated_at    INTEGER NOT NULL DEFAULT (unixepoch())
@@ -113,11 +113,11 @@ class HistoryStore {
       CREATE INDEX IF NOT EXISTS idx_turns_session       ON turns(session_key, created_at);
       CREATE INDEX IF NOT EXISTS idx_turns_extracted     ON turns(extracted);
       CREATE INDEX IF NOT EXISTS idx_turns_foresight     ON turns(foresight_scanned);
-      CREATE INDEX IF NOT EXISTS idx_memcells_session    ON memcells(session_key, created_at);
-      CREATE INDEX IF NOT EXISTS idx_memcells_scene      ON memcells(scene_id);
-      CREATE INDEX IF NOT EXISTS idx_memcells_cat        ON memcells(category);
-      CREATE INDEX IF NOT EXISTS idx_memcells_turn       ON memcells(turn_id);
-      CREATE INDEX IF NOT EXISTS idx_scenes_session      ON memscenes(session_key, updated_at);
+      CREATE INDEX IF NOT EXISTS idx_engrams_session    ON engrams(session_key, created_at);
+      CREATE INDEX IF NOT EXISTS idx_engrams_scene      ON engrams(scene_id);
+      CREATE INDEX IF NOT EXISTS idx_engrams_cat        ON engrams(category);
+      CREATE INDEX IF NOT EXISTS idx_engrams_turn       ON engrams(turn_id);
+      CREATE INDEX IF NOT EXISTS idx_scenes_session      ON episodes(session_key, updated_at);
       CREATE INDEX IF NOT EXISTS idx_foresights_session  ON foresights(session_key, created_at);
       CREATE INDEX IF NOT EXISTS idx_foresights_active   ON foresights(session_key, fulfilled);
       CREATE INDEX IF NOT EXISTS idx_char_obs_session   ON character_observations(session_key, observed_at);
@@ -126,6 +126,16 @@ class HistoryStore {
   }
 
   _migrate() {
+    // v0.4 → v0.5: rename memcells/memscenes tables to engrams/episodes
+    const tables = this.db
+      .prepare("SELECT name FROM sqlite_master WHERE type='table'")
+      .all()
+      .map((r) => r.name);
+    if (tables.includes('memcells') && !tables.includes('engrams'))
+      this.db.exec('ALTER TABLE memcells RENAME TO engrams');
+    if (tables.includes('memscenes') && !tables.includes('episodes'))
+      this.db.exec('ALTER TABLE memscenes RENAME TO episodes');
+
     const has = (table, col) =>
       this.db
         .prepare(`PRAGMA table_info(${table})`)
@@ -136,7 +146,7 @@ class HistoryStore {
     // by the foresight extractor (which never set it, leading to a silent race).
     if (!has('turns', 'foresight_scanned')) {
       this.db.exec('ALTER TABLE turns ADD COLUMN foresight_scanned INTEGER NOT NULL DEFAULT 0');
-      // For any existing turn that already has memcells, assume foresight has
+      // For any existing turn that already has engrams, assume foresight has
       // also been processed — otherwise we'd re-scan the entire history.
       this.db.exec(`
         UPDATE turns SET foresight_scanned = 1
@@ -144,25 +154,25 @@ class HistoryStore {
       `);
     }
 
-    // memcells.importance / category — added in 0.2.0
-    if (!has('memcells', 'importance'))
-      this.db.exec('ALTER TABLE memcells ADD COLUMN importance REAL NOT NULL DEFAULT 0.5');
-    if (!has('memcells', 'category'))
-      this.db.exec("ALTER TABLE memcells ADD COLUMN category TEXT NOT NULL DEFAULT 'other'");
+    // engrams.importance / category — added in 0.2.0
+    if (!has('engrams', 'importance'))
+      this.db.exec('ALTER TABLE engrams ADD COLUMN importance REAL NOT NULL DEFAULT 0.5');
+    if (!has('engrams', 'category'))
+      this.db.exec("ALTER TABLE engrams ADD COLUMN category TEXT NOT NULL DEFAULT 'other'");
 
-    // memscenes.avg_importance — added in 0.2.0
-    if (!has('memscenes', 'avg_importance'))
-      this.db.exec('ALTER TABLE memscenes ADD COLUMN avg_importance REAL NOT NULL DEFAULT 0.5');
+    // episodes.avg_importance — added in 0.2.0
+    if (!has('episodes', 'avg_importance'))
+      this.db.exec('ALTER TABLE episodes ADD COLUMN avg_importance REAL NOT NULL DEFAULT 0.5');
 
     // embedding_model — track which model produced each vector so we never
     // do cosine across incompatible vector spaces. Old NULL rows are treated
     // as legacy and skipped from similarity if cur. model differs.
     if (!has('turns', 'embedding_model'))
       this.db.exec('ALTER TABLE turns ADD COLUMN embedding_model TEXT');
-    if (!has('memcells', 'embedding_model'))
-      this.db.exec('ALTER TABLE memcells ADD COLUMN embedding_model TEXT');
-    if (!has('memscenes', 'embedding_model'))
-      this.db.exec('ALTER TABLE memscenes ADD COLUMN embedding_model TEXT');
+    if (!has('engrams', 'embedding_model'))
+      this.db.exec('ALTER TABLE engrams ADD COLUMN embedding_model TEXT');
+    if (!has('episodes', 'embedding_model'))
+      this.db.exec('ALTER TABLE episodes ADD COLUMN embedding_model TEXT');
   }
 
   // ─── Turns ────────────────────────────────────────────────────────────────
@@ -224,7 +234,7 @@ class HistoryStore {
     this.db.prepare('UPDATE turns SET recall_count=recall_count+1 WHERE id=?').run(id);
   }
 
-  // ─── MemCells ─────────────────────────────────────────────────────────────
+  // ─── Engrams ─────────────────────────────────────────────────────────────
 
   insertMemcell(
     sessionKey,
@@ -240,7 +250,7 @@ class HistoryStore {
     return this.db
       .prepare(
         `
-      INSERT INTO memcells (session_key, turn_id, content, embedding, importance, category, embedding_model)
+      INSERT INTO engrams (session_key, turn_id, content, embedding, importance, category, embedding_model)
       VALUES (?, ?, ?, ?, ?, ?, ?)
     `
       )
@@ -251,7 +261,7 @@ class HistoryStore {
     return this.db
       .prepare(
         `
-      SELECT id, content, embedding, embedding_model, importance FROM memcells
+      SELECT id, content, embedding, embedding_model, importance FROM engrams
       WHERE session_key=? AND scene_id IS NULL
       ORDER BY created_at ASC LIMIT ?
     `
@@ -264,36 +274,36 @@ class HistoryStore {
       .prepare(
         `
       SELECT id, content, embedding, embedding_model, importance, category, scene_id, decay_score, created_at
-      FROM memcells WHERE session_key=? ORDER BY created_at ASC
+      FROM engrams WHERE session_key=? ORDER BY created_at ASC
     `
       )
       .all(sessionKey);
   }
 
   assignMemcellToScene(id, sceneId) {
-    this.db.prepare('UPDATE memcells SET scene_id=? WHERE id=?').run(sceneId, id);
+    this.db.prepare('UPDATE engrams SET scene_id=? WHERE id=?').run(sceneId, id);
   }
 
   /**
-   * Look up the turn IDs that produced a set of memcells. Used by the
+   * Look up the turn IDs that produced a set of engrams. Used by the
    * selector to expand a relevant scene back to the underlying conversation.
    * Replaces an earlier `selector.history.db.prepare(...)` reach into internals.
    */
-  getTurnIdsForMemcells(memcellIds) {
-    if (!memcellIds.length) return [];
-    const ph = memcellIds.map(() => '?').join(',');
+  getTurnIdsForMemcells(engramIds) {
+    if (!engramIds.length) return [];
+    const ph = engramIds.map(() => '?').join(',');
     return this.db
-      .prepare(`SELECT DISTINCT turn_id FROM memcells WHERE id IN (${ph}) AND turn_id IS NOT NULL`)
-      .all(...memcellIds)
+      .prepare(`SELECT DISTINCT turn_id FROM engrams WHERE id IN (${ph}) AND turn_id IS NOT NULL`)
+      .all(...engramIds)
       .map((r) => r.turn_id);
   }
 
   updateDecayScores(sessionKey) {
     const now = Math.floor(Date.now() / 1000);
     const cells = this.db
-      .prepare('SELECT id, created_at, recall_count, importance FROM memcells WHERE session_key=?')
+      .prepare('SELECT id, created_at, recall_count, importance FROM engrams WHERE session_key=?')
       .all(sessionKey);
-    const update = this.db.prepare('UPDATE memcells SET decay_score=? WHERE id=?');
+    const update = this.db.prepare('UPDATE engrams SET decay_score=? WHERE id=?');
     this.db.transaction(() => {
       for (const c of cells) {
         const ageDays = (now - c.created_at) / 86400;
@@ -309,7 +319,7 @@ class HistoryStore {
     return this.db
       .prepare(
         `
-      DELETE FROM memcells
+      DELETE FROM engrams
       WHERE session_key=? AND decay_score<? AND recall_count=0
         AND category NOT IN ('decision','preference')
     `
@@ -317,14 +327,14 @@ class HistoryStore {
       .run(sessionKey, threshold).changes;
   }
 
-  // ─── MemScenes ────────────────────────────────────────────────────────────
+  // ─── Episodes ────────────────────────────────────────────────────────────
 
   insertScene(
     sessionKey,
     title,
     summary,
     embedding,
-    memcellIds,
+    engramIds,
     avgImportance = 0.5,
     embeddingModel = null
   ) {
@@ -332,7 +342,7 @@ class HistoryStore {
     return this.db
       .prepare(
         `
-      INSERT INTO memscenes (session_key, title, summary, embedding, memcell_ids, avg_importance, embedding_model)
+      INSERT INTO episodes (session_key, title, summary, embedding, engram_ids, avg_importance, embedding_model)
       VALUES (?, ?, ?, ?, ?, ?, ?)
     `
       )
@@ -341,54 +351,38 @@ class HistoryStore {
         title,
         summary,
         blob,
-        JSON.stringify(memcellIds),
+        JSON.stringify(engramIds),
         avgImportance,
         embeddingModel
       ).lastInsertRowid;
   }
 
-  updateScene(
-    sceneId,
-    title,
-    summary,
-    embedding,
-    memcellIds,
-    avgImportance,
-    embeddingModel = null
-  ) {
+  updateScene(sceneId, title, summary, embedding, engramIds, avgImportance, embeddingModel = null) {
     const blob = embedding ? Buffer.from(embedding.buffer) : null;
     this.db
       .prepare(
         `
-      UPDATE memscenes
-      SET title=?, summary=?, embedding=?, memcell_ids=?, avg_importance=?, embedding_model=?, updated_at=unixepoch()
+      UPDATE episodes
+      SET title=?, summary=?, embedding=?, engram_ids=?, avg_importance=?, embedding_model=?, updated_at=unixepoch()
       WHERE id=?
     `
       )
-      .run(
-        title,
-        summary,
-        blob,
-        JSON.stringify(memcellIds),
-        avgImportance,
-        embeddingModel,
-        sceneId
-      );
+      .run(title, summary, blob, JSON.stringify(engramIds), avgImportance, embeddingModel, sceneId);
   }
 
   getScenes(sessionKey) {
     return this.db
       .prepare(
         `
-      SELECT id, title, summary, embedding, embedding_model, memcell_ids, avg_importance, recall_count, updated_at
-      FROM memscenes WHERE session_key=? ORDER BY updated_at DESC
+      SELECT id, title, summary, embedding, embedding_model, engram_ids, avg_importance, recall_count, updated_at
+      FROM episodes WHERE session_key=? ORDER BY updated_at DESC
     `
       )
       .all(sessionKey);
   }
 
   bumpSceneRecall(id) {
-    this.db.prepare('UPDATE memscenes SET recall_count=recall_count+1 WHERE id=?').run(id);
+    this.db.prepare('UPDATE episodes SET recall_count=recall_count+1 WHERE id=?').run(id);
   }
 
   getTurnsByIds(ids) {
@@ -460,8 +454,8 @@ class HistoryStore {
       this.db.prepare(`SELECT COUNT(*) as n FROM ${k} WHERE session_key=?`).get(sessionKey).n;
     return {
       turns: q('turns'),
-      cells: q('memcells'),
-      scenes: q('memscenes'),
+      cells: q('engrams'),
+      scenes: q('episodes'),
       foresights: this.db
         .prepare('SELECT COUNT(*) as n FROM foresights WHERE session_key=? AND fulfilled=0')
         .get(sessionKey).n,

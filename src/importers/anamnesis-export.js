@@ -5,7 +5,7 @@ function extract(buf) {
   const supported = [1];
   if (!supported.includes(data.version))
     throw new Error(`unsupported export version ${data.version}`);
-  const summary = `${(data.memcells || []).length} memcells, ${(data.scenes || []).length} scenes, ${(data.foresights || []).length} foresights`;
+  const summary = `${(data.engrams || []).length} engrams, ${(data.scenes || []).length} scenes, ${(data.foresights || []).length} foresights`;
   return { text: null, direct: true, summary, data };
 }
 module.exports = { extract };

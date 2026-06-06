@@ -1,7 +1,7 @@
 /**
  * foresight.js — Future-intention extraction (EverMemOS-style Foresight).
  *
- * Runs in parallel with memcell extraction. Each assistant turn is scanned
+ * Runs in parallel with engram extraction. Each assistant turn is scanned
  * for statements about future plans, goals, or intended actions. These are
  * stored as foresights so the model always knows what it was about to do.
  *
@@ -13,7 +13,7 @@
  *
  * IMPORTANT — own flag, not shared with extractor:
  *   This module now tracks its own `foresight_scanned` column. Previously
- *   it piggybacked on `turns.extracted`, which only the memcell extractor
+ *   it piggybacked on `turns.extracted`, which only the engram extractor
  *   set. Whichever extractor finished a turn first silently starved the
  *   other for that turn.
  */
