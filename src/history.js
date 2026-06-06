@@ -370,15 +370,15 @@ class HistoryStore {
       .run(title, summary, blob, JSON.stringify(engramIds), avgImportance, embeddingModel, sceneId);
   }
 
-  getScenes(sessionKey) {
+  getScenes(_sessionKey) {
     return this.db
       .prepare(
         `
       SELECT id, title, summary, embedding, embedding_model, engram_ids, avg_importance, recall_count, updated_at
-      FROM episodes WHERE session_key=? ORDER BY updated_at DESC
+      FROM episodes ORDER BY updated_at DESC
     `
       )
-      .all(sessionKey);
+      .all();
   }
 
   bumpSceneRecall(id) {
