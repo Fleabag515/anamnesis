@@ -37,10 +37,18 @@ After this feature, Anamnesis is fully self-contained:
 
 ### Modified
 - `src/extractor.js` — replace `require('./lib/ollama')` with `require('./lib/brain')`;
-  drop `this.ollamaUrl` and `this.embedder` constructor args; use `brain.embed()` directly
+  drop `this.ollamaUrl` and `this.embedder` constructor args; use `brain.embed()` directly;
+  `_callLLM()` changes from:
+  `chat(this.ollamaUrl, { model, messages, options: { temperature: 0.1, num_predict: 500 }, timeoutMs })`
+  to: `brain.chat(messages, { temperature: 0.1, maxTokens: 500, timeoutMs: this.cfg.timeoutMs })`
+  (note: `options.num_predict` → top-level `maxTokens`; URL and model args removed);
+  `EXTRACT_PROMPT` local constant replaced by `require('./lib/prompts').ENGRAM_EXTRACTION`
 - `src/foresight.js` — replace ollama require; drop `this.ollamaUrl` (which currently reads
   `config.embedding.ollamaUrl` — a cross-section dependency that must also be removed) and
-  `this.cfg.model`
+  `this.cfg.model`; `_callLLM()` changes from:
+  `chat(this.ollamaUrl, { model, messages, options: { temperature: 0.1, num_predict: 400 }, timeoutMs })`
+  to: `brain.chat(messages, { temperature: 0.1, maxTokens: 400, timeoutMs: this.cfg.timeoutMs })`;
+  `FORESIGHT_PROMPT` replaced by `require('./lib/prompts').FORESIGHT`
 - `src/consolidator.js` — replace ollama require; `_generateScene()` method body changes:
   `generate(url, { model, prompt })` becomes `brain.generate(prompt)` — the URL and model
   args are dropped entirely, not just the require swap
@@ -324,7 +332,7 @@ This fix is included in this feature's scope.
 
 ```json
 "node-llama-cpp": "^3.1.0",
-"@huggingface/transformers": "^3.x"
+"@huggingface/transformers": "^3.0.0"
 ```
 
 `node-llama-cpp` is pinned to `^3.1.0` — the GGUF loading API and `gpuLayers` option
@@ -344,10 +352,17 @@ if no prebuilt matches (requires C++ compiler — documented in README).
 ## Testing Strategy
 
 - **Unit: `model-manager.js`** — mock `https`, filesystem; test download, retry, checksum
-  verification, partial file resume (Range header logic)
+  verification, partial file resume (Range header logic); test 200-vs-206 handling (server
+  returns 200 when range requested → discard partial and restart)
 - **Unit: `brain.js`** — mock `inference-engine.js` and `local-embedder.js`; test queue
   behavior while not-ready (calls held, not dropped); test that queued calls resolve after
-  engine signals ready; test that `timeoutMs` is applied post-queue not pre-queue
+  engine signals ready; test that `timeoutMs` is applied post-queue not pre-queue; test that
+  `embed()` returns null before ready; test that calling `brain.chat()` before `brain.init()`
+  queues correctly (same as loading state)
+- **Unit: `inference-engine.js`** — mock `node-llama-cpp`; test GPU probe: nvidia-smi returns
+  VRAM → gpuLayers calculated correctly; probe command fails → gpuLayers = 0; macOS Metal path
+  uses budget directly; test that `isLoaded()` returns false before load, true after; test
+  that concurrent calls are serialized (second call waits for first)
 - **Unit: `prompts.js`** — verify all exports are non-empty strings
 - **Unit: `local-embedder.js`** — mock `@huggingface/transformers`; test null return when
   not loaded; test Float32Array shape when loaded
