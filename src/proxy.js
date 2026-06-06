@@ -78,7 +78,12 @@ async function start(config = loadConfig()) {
       upUrl,
       lib: upUrl.protocol === 'https:' ? https : http,
       port: upUrl.port || (upUrl.protocol === 'https:' ? 443 : 80),
-      path: upUrl.pathname.replace(/\/$/, '') + reqPath,
+      path: (() => {
+        const base = upUrl.pathname.replace(/\/$/, '');
+        // If the baseUrl already ends in /v1, strip /v1 from reqPath to avoid doubling
+        const req = base.endsWith('/v1') ? reqPath.replace(/^\/v1/, '') : reqPath;
+        return base + req;
+      })(),
     };
   }
 

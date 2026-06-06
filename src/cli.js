@@ -23,12 +23,16 @@ async function ensureDaemon() {
     process.exit(1);
   }
 
+  const logPath = path.join(os.homedir(), '.anamnesis', 'daemon.log');
+  fs.mkdirSync(path.dirname(logPath), { recursive: true });
+  const logFd = fs.openSync(logPath, 'a');
   const child = spawn(process.execPath, [DAEMON_JS], {
     detached: true,
-    stdio: 'ignore',
+    stdio: ['ignore', logFd, logFd],
     env: { ...process.env, ANAMNESIS_LOG: process.env.ANAMNESIS_LOG || 'info' },
   });
   child.unref();
+  fs.closeSync(logFd);
 
   const deadline = Date.now() + 5000;
   while (Date.now() < deadline) {
@@ -164,17 +168,47 @@ const commands = {
 
   async logs([name]) {
     if (!name) die('usage: anamnesis logs <name>');
-    // MVP: tails full daemon journal. Per-character SSE streaming is post-MVP.
-    console.log(`(showing all daemon logs — filter for '${name}' manually)\n`);
-    try {
-      const child = spawn('journalctl', ['-u', 'anamnesis', '-f', '--no-pager', '-n', '50'], {
-        stdio: 'inherit',
+    console.log(`(showing daemon logs — filter for '${name}' manually)\n`);
+
+    const logPath = path.join(os.homedir(), '.anamnesis', 'daemon.log');
+    const isWindows = process.platform === 'win32';
+
+    if (!isWindows) {
+      // Linux/macOS: try journalctl first, fall back to log file
+      try {
+        const child = spawn('journalctl', ['-u', 'anamnesis', '-f', '--no-pager', '-n', '50'], {
+          stdio: 'inherit',
+        });
+        child.on('error', () => tailFile(logPath));
+        return;
+      } catch {
+        // fall through
+      }
+    }
+
+    tailFile(logPath);
+
+    function tailFile(p) {
+      if (!fs.existsSync(p)) {
+        console.log(`no log file found at ${p}`);
+        console.log('start a character first: anamnesis start <name>');
+        return;
+      }
+      // Print last 50 lines then watch for new content
+      const stat = fs.statSync(p);
+      let pos = Math.max(0, stat.size - 8000);
+      const printFrom = (offset) => {
+        const stream = fs.createReadStream(p, { start: offset });
+        stream.pipe(process.stdout);
+        stream.on('end', () => { pos = stat.size; });
+      };
+      printFrom(pos);
+      fs.watchFile(p, { interval: 500 }, (curr) => {
+        if (curr.size > pos) {
+          fs.createReadStream(p, { start: pos }).pipe(process.stdout);
+          pos = curr.size;
+        }
       });
-      child.on('error', () =>
-        console.log('journalctl not available — check ~/.anamnesis/daemon.log')
-      );
-    } catch {
-      console.log('check ~/.anamnesis/daemon.log');
     }
   },
 
