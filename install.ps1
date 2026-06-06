@@ -4,7 +4,6 @@
 $ErrorActionPreference = 'Stop'
 $RepoUrl    = 'https://github.com/Fleabag515/anamnesis/archive/refs/heads/main.zip'
 $InstallDir = "$env:LOCALAPPDATA\anamnesis"
-$BinDir     = "$env:LOCALAPPDATA\anamnesis\bin"
 
 Write-Host "`n✨ Installing anamnesis...`n" -ForegroundColor Cyan
 
@@ -40,17 +39,8 @@ Remove-Item $TmpZip
 Set-Location $InstallDir
 npm install --omit=dev --silent
 
-# ─── Create wrapper batch file ───────────────────────────────────────────────
-New-Item -ItemType Directory -Force -Path $BinDir | Out-Null
-$Wrapper = "@echo off`r`nnode `"$InstallDir\src\cli.js`" %*"
-Set-Content -Path "$BinDir\anamnesis.cmd" -Value $Wrapper
-
-# ─── Add to user PATH ─────────────────────────────────────────────────────────
-$UserPath = [System.Environment]::GetEnvironmentVariable('Path', 'User')
-if ($UserPath -notlike "*$BinDir*") {
-    [System.Environment]::SetEnvironmentVariable('Path', "$UserPath;$BinDir", 'User')
-    Write-Host "Added $BinDir to user PATH" -ForegroundColor Yellow
-}
+# ─── Register anamnesis command globally ─────────────────────────────────────
+npm link --silent
 
 Write-Host "`n✓ anamnesis installed" -ForegroundColor Green
 Write-Host "  Restart your terminal, then run: anamnesis new"

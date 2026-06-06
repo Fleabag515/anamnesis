@@ -309,6 +309,7 @@ const commands = {
           { stdio: 'inherit' }
         );
         execSync('npm install --omit=dev', { cwd: INSTALL_DIR, stdio: 'inherit' });
+        execSync('npm link --silent', { cwd: INSTALL_DIR, stdio: 'pipe' });
         execSync(
           `powershell -Command "Remove-Item '${TmpZip}','${TmpDir}' -Recurse -Force -ErrorAction SilentlyContinue"`,
           { stdio: 'pipe' }
