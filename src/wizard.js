@@ -182,14 +182,11 @@ async function run(args) {
 }
 
 async function edit(name) {
-  const registry = new Registry(REGISTRY_PATH);
-  const entry = registry.get(name);
-  if (!entry) {
+  const configPath = path.join(os.homedir(), '.anamnesis', 'characters', name, 'config.json');
+  if (!fs.existsSync(configPath)) {
     console.error(`character '${name}' not found`);
     process.exit(1);
   }
-
-  const configPath = path.join(os.homedir(), '.anamnesis', 'characters', name, 'config.json');
   const current = JSON.parse(fs.readFileSync(configPath, 'utf8'));
 
   console.log(`\n✏️  editing ${name}\n`);

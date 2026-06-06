@@ -110,9 +110,23 @@ const commands = {
   },
 
   async restart([name]) {
-    if (!name) die('usage: anamnesis restart <name>');
-    await commands.stop([name]);
-    await commands.start([name]);
+    if (name) {
+      await commands.stop([name]);
+      await commands.start([name]);
+    } else {
+      // No name — restart all currently active characters
+      await ensureDaemon();
+      const res = await client.characters();
+      const active = (res.body.characters || []).filter((c) => c.running);
+      if (!active.length) {
+        console.log('no active characters to restart');
+        return;
+      }
+      for (const c of active) {
+        await commands.stop([c.name]);
+        await commands.start([c.name]);
+      }
+    }
   },
 
   async show([name]) {
@@ -276,7 +290,7 @@ const commands = {
       process.exit(1);
     }
 
-    console.log('updated — restart any running daemon: anamnesis restart');
+    console.log('updated — restart active characters: anamnesis restart');
   },
 };
 
