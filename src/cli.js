@@ -199,41 +199,87 @@ const commands = {
 
   async update() {
     const { execSync } = require('child_process');
-    const INSTALL_DIR = path.join(os.homedir(), '.local', 'share', 'anamnesis');
+    const isWindows = process.platform === 'win32';
 
-    // Check current and remote HEAD
-    let current, remote;
-    try {
-      current = execSync('git rev-parse HEAD', { cwd: INSTALL_DIR, encoding: 'utf8' }).trim();
-      remote = execSync('git ls-remote origin HEAD', { cwd: INSTALL_DIR, encoding: 'utf8' })
-        .trim()
-        .split('\t')[0];
-    } catch {
-      console.error('update failed: not a git repo or no network access');
-      process.exit(1);
-    }
+    const INSTALL_DIR = isWindows
+      ? path.join(
+          process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local'),
+          'anamnesis'
+        )
+      : path.join(os.homedir(), '.local', 'share', 'anamnesis');
 
-    if (current === remote) {
-      console.log('anamnesis is up to date (' + current.slice(0, 7) + ')');
-      return;
-    }
+    const isGitRepo = fs.existsSync(path.join(INSTALL_DIR, '.git'));
 
-    console.log('update available: ' + current.slice(0, 7) + ' → ' + remote.slice(0, 7));
-    console.log('updating...');
+    if (isGitRepo) {
+      // ── Git install (Linux / macOS / developer setup) ──────────────────────
+      let current, remote;
+      try {
+        current = execSync('git rev-parse HEAD', { cwd: INSTALL_DIR, encoding: 'utf8' }).trim();
+        remote = execSync('git ls-remote origin HEAD', { cwd: INSTALL_DIR, encoding: 'utf8' })
+          .trim()
+          .split('\t')[0];
+      } catch {
+        console.error('update failed: git error or no network access');
+        process.exit(1);
+      }
 
-    try {
-      execSync('git pull --ff-only', { cwd: INSTALL_DIR, stdio: 'inherit' });
-      execSync('npm install --omit=dev', { cwd: INSTALL_DIR, stdio: 'inherit' });
-    } catch {
+      if (current === remote) {
+        console.log('anamnesis is up to date (' + current.slice(0, 7) + ')');
+        return;
+      }
+
+      console.log('update available: ' + current.slice(0, 7) + ' → ' + remote.slice(0, 7));
+      console.log('updating...');
+
+      try {
+        execSync('git pull --ff-only', { cwd: INSTALL_DIR, stdio: 'inherit' });
+        execSync('npm install --omit=dev', { cwd: INSTALL_DIR, stdio: 'inherit' });
+      } catch {
+        console.error(
+          'update failed — try manually: cd ~/.local/share/anamnesis && git pull && npm install --omit=dev'
+        );
+        process.exit(1);
+      }
+    } else if (isWindows) {
+      // ── ZIP install (Windows installer) ────────────────────────────────────
+      const REPO_URL =
+        'https://github.com/Fleabag515/anamnesis/archive/refs/heads/main.zip';
+      const TmpZip = path.join(os.tmpdir(), 'anamnesis-update.zip');
+      const TmpDir = path.join(os.tmpdir(), 'anamnesis-update');
+
+      console.log('downloading update...');
+      try {
+        execSync(
+          `powershell -Command "Invoke-WebRequest -Uri '${REPO_URL}' -OutFile '${TmpZip}' -UseBasicParsing"`,
+          { stdio: 'inherit' }
+        );
+        execSync(
+          `powershell -Command "if (Test-Path '${TmpDir}') { Remove-Item '${TmpDir}' -Recurse -Force }; Expand-Archive -Path '${TmpZip}' -DestinationPath '${TmpDir}' -Force"`,
+          { stdio: 'inherit' }
+        );
+        execSync(
+          `powershell -Command "Copy-Item '${TmpDir}\\anamnesis-main\\*' '${INSTALL_DIR}' -Recurse -Force"`,
+          { stdio: 'inherit' }
+        );
+        execSync('npm install --omit=dev', { cwd: INSTALL_DIR, stdio: 'inherit' });
+        execSync(
+          `powershell -Command "Remove-Item '${TmpZip}','${TmpDir}' -Recurse -Force -ErrorAction SilentlyContinue"`,
+          { stdio: 'pipe' }
+        );
+      } catch {
+        console.error(
+          'update failed — re-run the installer:\n  irm https://raw.githubusercontent.com/Fleabag515/anamnesis/main/install.ps1 | iex'
+        );
+        process.exit(1);
+      }
+    } else {
       console.error(
-        'update failed — try manually: cd ~/.local/share/anamnesis && git pull && npm install --omit=dev'
+        'update failed: not a git repo. Re-run the installer from the README.'
       );
       process.exit(1);
     }
 
-    console.log(
-      'updated to ' + remote.slice(0, 7) + ' — restart any running daemon: anamnesis restart'
-    );
+    console.log('updated — restart any running daemon: anamnesis restart');
   },
 };
 
