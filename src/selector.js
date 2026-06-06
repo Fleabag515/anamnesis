@@ -126,12 +126,7 @@ class Selector {
       if (!_charBlock) return systemMsgs;
       // Inject character block even when no memories or foresights are present
       if (systemMsgs.length === 0) return [{ role: 'system', content: _charBlock.trim() }];
-      const _enriched = [...systemMsgs];
-      _enriched[_enriched.length - 1] = {
-        ..._enriched[_enriched.length - 1],
-        content: _enriched[_enriched.length - 1].content + _charBlock,
-      };
-      return _enriched;
+      return [{ role: 'system', content: _charBlock.trim() + '\n\n' + systemMsgs.map(m => m.content).join('\n\n') }];
     }
 
     // Character block is always prepended (persona handles its own enabled check)
@@ -173,11 +168,10 @@ class Selector {
     if (systemMsgs.length === 0) {
       return [{ role: 'system', content: injection.trim() }];
     }
-    const enriched = [...systemMsgs];
-    enriched[enriched.length - 1] = {
-      ...enriched[enriched.length - 1],
-      content: enriched[enriched.length - 1].content + injection,
-    };
+    // Prepend so character persona takes priority over any client system prompt
+    const enriched = [
+      { role: 'system', content: injection.trim() + '\n\n' + systemMsgs.map(m => m.content).join('\n\n') },
+    ];
     return enriched;
   }
 
