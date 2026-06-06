@@ -131,8 +131,19 @@ class HistoryStore {
       .prepare("SELECT name FROM sqlite_master WHERE type='table'")
       .all()
       .map((r) => r.name);
-    if (tables.includes('memcells') && !tables.includes('engrams'))
-      this.db.exec('ALTER TABLE memcells RENAME TO engrams');
+    if (tables.includes('memcells')) {
+      if (!tables.includes('engrams')) {
+        this.db.exec('ALTER TABLE memcells RENAME TO engrams');
+      } else {
+        // engrams table already exists (created by schema) — merge orphaned memcells in
+        this.db.exec(`
+          INSERT INTO engrams (turn_id, session_key, content, embedding, recall_count, decay_score, scene_id, created_at, importance, category, embedding_model)
+          SELECT turn_id, session_key, content, embedding, recall_count, decay_score, scene_id, created_at, importance, category, embedding_model
+          FROM memcells WHERE id NOT IN (SELECT id FROM engrams)
+        `);
+        this.db.exec('DROP TABLE memcells');
+      }
+    }
     if (tables.includes('memscenes') && !tables.includes('episodes'))
       this.db.exec('ALTER TABLE memscenes RENAME TO episodes');
 
