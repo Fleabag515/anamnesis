@@ -17,7 +17,9 @@
     "format:check": "prettier --check \"src/**/*.js\" \"test/**/*.js\" \"*.{json,md}\""
   },
   "dependencies": {
+    "@huggingface/transformers": "^3.8.1",
     "better-sqlite3": "^9.6.0",
+    "node-llama-cpp": "^3.18.1",
     "prompts": "^2.4.2"
   },
   "devDependencies": {
