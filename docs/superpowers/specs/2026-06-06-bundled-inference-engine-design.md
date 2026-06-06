@@ -38,22 +38,33 @@ After this feature, Anamnesis is fully self-contained:
 ### Modified
 - `src/extractor.js` — replace `require('./lib/ollama')` with `require('./lib/brain')`;
   drop `this.ollamaUrl` and `this.embedder` constructor args; use `brain.embed()` directly
-- `src/foresight.js` — replace ollama require; drop `this.ollamaUrl`, `this.cfg.model`
-- `src/consolidator.js` — replace ollama require; `generate()` calls become `brain.generate()`
-- `src/persona.js` — replace ollama require; drop `this.ollama` and `this.model`;
-  all `chat(this.ollama, { model: this.model, messages })` calls become `brain.chat(messages)`
+- `src/foresight.js` — replace ollama require; drop `this.ollamaUrl` (which currently reads
+  `config.embedding.ollamaUrl` — a cross-section dependency that must also be removed) and
+  `this.cfg.model`
+- `src/consolidator.js` — replace ollama require; `_generateScene()` method body changes:
+  `generate(url, { model, prompt })` becomes `brain.generate(prompt)` — the URL and model
+  args are dropped entirely, not just the require swap
+- `src/persona.js` — replace ollama require; drop `this.ollama` (currently reads
+  `config.extraction?.ollamaUrl || 'http://127.0.0.1:11434'`) and `this.model`;
+  all three `chat(this.ollama, { model: this.model, messages, think: false })` call sites
+  (`_extractProfile`, `_runDriftCheck`, `_consolidateGrowth`) become `brain.chat(messages)`;
+  the `think: false` option is dropped — Qwen2.5-1.5B-Instruct does not support thinking mode
 - `src/importers/index.js` — replace ollama require; fix broken `llmExtract()` call
   (currently calls `chat(url, model, messages, false)` with positional args — must be
-  updated to `brain.chat(messages)`)
+  updated to `brain.chat(messages, { timeoutMs: 45000 })`); `brain.init()` must be called
+  before `llmExtract()` runs in the CLI path — `importers/index.js` calls `brain.init(config)`
+  at the top of `llmExtract()` if brain is not already initialized
 - `src/embedder.js` — replace Ollama HTTP call with `brain.embed()`; constructor
-  simplified to `new Embedder()` (no URL/model args); `this.model` becomes the
-  hardcoded constant `'Xenova/all-MiniLM-L6-v2'`
-- `src/proxy.js` — call `brain.init(config)` at startup; pass brain instance into
-  `Embedder` constructor (or import brain directly in embedder.js); update status
-  response to return `brain.embeddingModel()` instead of `config.embedding.model`
+  simplified to `new Embedder()` (no URL/model args); exported as singleton;
+  `Selector` and `Consolidator` constructors that accept `embedder` as an arg are unchanged —
+  they receive the singleton instance from `proxy.js` as before
+- `src/proxy.js` — call `brain.init(config)` at startup before constructing `Embedder`,
+  `Extractor`, `Selector`, `Consolidator`; change `new Embedder(url, model)` to
+  `require('./embedder.js')` (singleton); update startup log from
+  `config.extraction.model` to the bundled model name constant; update status response
+  to return `brain.embeddingModel()` instead of `config.embedding.model`
 - `src/lib/char-config.js` — remove `embedding` section entirely; remove
   `extraction.model`, `foresight.model`, `persona.model`; add `inference.gpuLayerBudgetMB`
-- `src/consolidator.js` — `generate()` changed to use chat template (see below)
 
 ---
 
@@ -113,7 +124,7 @@ communicated implicitly: `embed()` returns null when not ready (callers handle i
 
 **Queue behavior:**
 - While models are loading or downloading, `chat()` and `generate()` calls are held in an
-  internal queue (max depth: 200, matching `startupBacklogLimit`)
+  internal queue (max depth: 200, hardcoded constant — independent of `startupBacklogLimit`)
 - Each queued call carries its own resolve/reject pair
 - **Caller-side `timeoutMs` is ignored while queued** — `brain.js` strips `timeoutMs`
   from queued calls and applies it only once the call is actually sent to `inference-engine.js`
@@ -122,6 +133,8 @@ communicated implicitly: `embed()` returns null when not ready (callers handle i
   processed-with-no-data) produces worse outcomes than waiting
 - If the model download fails permanently (after retries), queued calls are rejected with
   a descriptive error that callers log and swallow — same path as any other LLM timeout
+- If `brain.chat()` or `brain.embed()` is called before `brain.init()`, calls are queued
+  the same way — `brain.js` initializes to a "not-ready" state at module load time
 
 ### `src/lib/model-manager.js` — Download & Cache
 
@@ -133,7 +146,9 @@ Responsible for ensuring models are present on disk before use.
 3. If size mismatch or checksum fails: begin download (or resume)
 4. **Resuming:** if a partial file exists, its size is known; issue `Range: bytes=<size>-`
    to continue from where the previous download stopped. Expected file size is hardcoded
-   in `model-manager.js` so the range request is always correct without inspecting the server
+   in `model-manager.js` so the range request is always correct without inspecting the server.
+   If the server responds with `200 OK` instead of `206 Partial Content` (range not supported
+   or file changed), discard the partial file and restart the download from byte 0.
 5. Log download progress to daemon.log at 10% intervals
 6. On completion: re-verify SHA256; if it fails, delete and restart download
 7. Signal `inference-engine.js` that the file is ready
@@ -308,9 +323,13 @@ This fix is included in this feature's scope.
 ## Dependencies
 
 ```json
-"node-llama-cpp": "^3.x",
+"node-llama-cpp": "^3.1.0",
 "@huggingface/transformers": "^3.x"
 ```
+
+`node-llama-cpp` is pinned to `^3.1.0` — the GGUF loading API and `gpuLayers` option
+were validated against this minor. Do not upgrade past 3.x without re-validating the
+model load and context creation calls.
 
 `node-llama-cpp` ships prebuilt native binaries for:
 - Linux x64 (CPU, CUDA)
