@@ -20,7 +20,8 @@
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const { chat, tryParseJsonObject } = require('./lib/ollama.js');
+const brain = require('./lib/brain.js');
+const { PERSONA_EXTRACT, PERSONA_DRIFT, PERSONA_EVOLUTION } = require('./lib/prompts.js');
 const log = require('./lib/logger.js').make('persona');
 
 // Default SOUL.md search paths for OpenClaw auto-detection
@@ -53,51 +54,11 @@ function resolveGlob(pattern) {
   return null;
 }
 
-// ─── LLM prompts ─────────────────────────────────────────────────────────────
-
-const EXTRACT_PROMPT = `You are extracting a compact character profile from an agent identity document.
-Return ONLY valid JSON — no markdown fences, no explanation.
-
-JSON schema:
-{
-  "name": "agent name",
-  "archetype": "one-sentence core identity",
-  "vibe": "personality tone descriptors (comma-separated)",
-  "style_markers": ["distinctive phrases or words this agent uses"],
-  "behavioral_patterns": ["how they approach tasks and interaction"],
-  "relationship": "relationship context with their user (one sentence)"
-}
-
-SOURCE DOCUMENT:
-`;
-
-const DRIFT_PROMPT = `You are checking if an AI assistant response is consistent with its character profile.
-Return ONLY valid JSON — no markdown fences, no explanation.
-
-{
-  "consistent": 0.0,
-  "missing": ["style markers or traits absent from this response"],
-  "novel": ["new behaviors or phrases not in the profile but observed here"]
-}
-"consistent" is 0.0 (total drift) to 1.0 (perfect consistency).
-
-CHARACTER PROFILE:
-`;
-
-const EVOLVE_PROMPT = `You are updating an AI character's evolution notes based on recent observations.
-Write 2–4 sentences describing what has genuinely changed or grown in this character recently.
-Focus on concrete new patterns, not vague generalities. Return ONLY the prose — no JSON, no headers.
-
-CURRENT EVOLUTION NOTES (may be empty):
-`;
-
 // ─── PersonaManager ──────────────────────────────────────────────────────────
 
 class PersonaManager {
   constructor(config, history) {
     this.cfg = config.persona || {};
-    this.ollama = config.extraction?.ollamaUrl || 'http://127.0.0.1:11434';
-    this.model = this.cfg.model || config.extraction?.model || 'qwen3:0.6b';
     this.history = history;
 
     // Drift tracking: per-session turn counter since last check
@@ -289,16 +250,12 @@ class PersonaManager {
 
   async _extractProfile(rawContent) {
     const truncated = rawContent.slice(0, 3000);
-    const prompt = EXTRACT_PROMPT + truncated;
     try {
-      const text = await chat(this.ollama, {
-        model: this.model,
-        messages: [{ role: 'user', content: prompt }],
-        think: false,
-        options: { temperature: 0.1, num_predict: 400 },
-        timeoutMs: this.cfg.timeoutMs || 45000,
-      });
-      const parsed = tryParseJsonObject(text);
+      const text = await brain.chat(
+        [{ role: 'user', content: PERSONA_EXTRACT + truncated }],
+        { maxTokens: 400, temperature: 0.1, timeoutMs: this.cfg.timeoutMs || 45000 }
+      );
+      const parsed = brain.tryParseJsonObject(text);
       if (!parsed) log.warn('persona: profile extraction returned non-JSON:', text.slice(0, 120));
       return parsed;
     } catch (err) {
@@ -322,18 +279,15 @@ class PersonaManager {
 
     const profileText = this._formatProfileForPrompt();
     const responseSnippet = responseText.slice(0, 900);
-    const prompt = DRIFT_PROMPT + profileText + '\n\nRESPONSE:\n' + responseSnippet;
+    const prompt = PERSONA_DRIFT + profileText + '\n\nRESPONSE:\n' + responseSnippet;
 
     let result;
     try {
-      const text = await chat(this.ollama, {
-        model: this.model,
-        messages: [{ role: 'user', content: prompt }],
-        think: false,
-        options: { temperature: 0.1, num_predict: 250 },
-        timeoutMs: this.cfg.timeoutMs || 30000,
-      });
-      result = tryParseJsonObject(text);
+      const text = await brain.chat(
+        [{ role: 'user', content: prompt }],
+        { maxTokens: 250, temperature: 0.1, timeoutMs: this.cfg.timeoutMs || 30000 }
+      );
+      result = brain.tryParseJsonObject(text);
     } catch (err) {
       log.warn('persona: drift check LLM error:', err.message);
       return;
@@ -407,7 +361,7 @@ class PersonaManager {
     const maxChars = this.cfg.evolution?.maxEvolutionChars ?? 600;
 
     const prompt =
-      EVOLVE_PROMPT +
+      PERSONA_EVOLUTION +
       (currentNotes || '(none)') +
       '\n\nPROFILE:\n' +
       profileText +
@@ -416,13 +370,10 @@ class PersonaManager {
 
     let newNotes;
     try {
-      newNotes = await chat(this.ollama, {
-        model: this.model,
-        messages: [{ role: 'user', content: prompt }],
-        think: false,
-        options: { temperature: 0.3, num_predict: 200 },
-        timeoutMs: this.cfg.timeoutMs || 45000,
-      });
+      newNotes = await brain.chat(
+        [{ role: 'user', content: prompt }],
+        { maxTokens: 200, temperature: 0.3, timeoutMs: this.cfg.timeoutMs || 45000 }
+      );
       newNotes = newNotes.trim().slice(0, maxChars);
     } catch (err) {
       log.warn('persona: evolution LLM error:', err.message);
