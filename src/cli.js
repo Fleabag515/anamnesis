@@ -116,7 +116,7 @@ const commands = {
     } else {
       // No name — restart all currently active characters
       await ensureDaemon();
-      const res = await client.characters();
+      const res = await client.listCharacters();
       const active = (res.body.characters || []).filter((c) => c.running);
       if (!active.length) {
         console.log('no active characters to restart');
