@@ -300,12 +300,21 @@ async function start(config = loadConfig()) {
     }
   }
 
-  server.listen(config.proxy.port, config.proxy.host, () => {
-    log.info(`listening on ${config.proxy.host}:${config.proxy.port}`);
-    log.info(`upstream: ${config.upstream.baseUrl}`);
-    log.info(
-      `token budget: ${config.context.tokenBudget} | recency: ${config.context.recencyTurns} turns | slots: ${config.context.rotatingSlots}`
-    );
+  await new Promise((resolve, reject) => {
+    server.once('error', (err) => {
+      if (err.code === 'EADDRINUSE') {
+        log.error(`port ${config.proxy.port} already in use — stop the other instance first`);
+      }
+      reject(err);
+    });
+    server.listen(config.proxy.port, config.proxy.host, () => {
+      log.info(`listening on ${config.proxy.host}:${config.proxy.port}`);
+      log.info(`upstream: ${config.upstream.baseUrl}`);
+      log.info(
+        `token budget: ${config.context.tokenBudget} | recency: ${config.context.recencyTurns} turns | slots: ${config.context.rotatingSlots}`
+      );
+      resolve();
+    });
   });
 
   let shuttingDown = false;
