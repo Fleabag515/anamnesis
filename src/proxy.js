@@ -34,6 +34,7 @@ const {
   getSessionKey,
   buildUpstreamHeaders,
   makeSseAccumulator,
+  stripThinkingTokens,
 } = require('./lib/proxy-helpers.js');
 const log = require('./lib/logger.js').make('anamnesis');
 
@@ -161,6 +162,7 @@ async function start(config = loadConfig()) {
     });
   }
 
+
   function recordAssistantTurn(sessionKey, content) {
     if (!content) return;
     // Defer to the next tick so the client connection is fully closed first;
@@ -258,7 +260,7 @@ async function start(config = loadConfig()) {
             log.error('streaming upstream error:', err.message);
             return;
           }
-          recordAssistantTurn(sessionKey, sse.content);
+          recordAssistantTurn(sessionKey, stripThinkingTokens(sse.content));
           return;
         }
 
@@ -275,7 +277,7 @@ async function start(config = loadConfig()) {
 
         try {
           const upParsed = JSON.parse(upRes.body.toString());
-          const content = upParsed.choices?.[0]?.message?.content ?? '';
+          const content = stripThinkingTokens(upParsed.choices?.[0]?.message?.content ?? '');
           recordAssistantTurn(sessionKey, content);
         } catch {
           /* non-JSON response; nothing to persist */

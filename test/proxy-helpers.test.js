@@ -201,3 +201,56 @@ test('SSE: empty stream => empty content', () => {
   acc.feed(Buffer.from('data: [DONE]\n\n'));
   assert.equal(acc.content, '');
 });
+
+// ─── stripThinkingTokens ─────────────────────────────────────────────────────
+const { stripThinkingTokens } = require('../src/lib/proxy-helpers.js');
+
+test('stripThinkingTokens: passthrough when no thinking tokens', () => {
+  assert.equal(stripThinkingTokens('Hello, how can I help?'), 'Hello, how can I help?');
+});
+
+test('stripThinkingTokens: returns falsy input unchanged', () => {
+  assert.equal(stripThinkingTokens(''), '');
+  assert.equal(stripThinkingTokens(null), null);
+  assert.equal(stripThinkingTokens(undefined), undefined);
+});
+
+test('stripThinkingTokens: strips Qwen3 <think> block', () => {
+  const raw = '<think>\nLet me reason through this carefully.\n</think>\nThe answer is 42.';
+  assert.equal(stripThinkingTokens(raw), 'The answer is 42.');
+});
+
+test('stripThinkingTokens: strips Gemma 4 <|channel>thought block (empty)', () => {
+  const raw = '<|channel>thought\n<channel|>online';
+  assert.equal(stripThinkingTokens(raw), 'online');
+});
+
+test('stripThinkingTokens: strips Gemma 4 <|channel>thought block (with content)', () => {
+  const raw = '<|channel>thought\nI should greet the user warmly.\n<channel|>Hello there!';
+  assert.equal(stripThinkingTokens(raw), 'Hello there!');
+});
+
+test('stripThinkingTokens: strips multiple Gemma 4 blocks', () => {
+  const raw = '<|channel>thought\n<channel|><|channel>thought\n<channel|>Ready.';
+  assert.equal(stripThinkingTokens(raw), 'Ready.');
+});
+
+test('stripThinkingTokens: strips multiple Qwen3 blocks', () => {
+  const raw = '<think>step 1</think>\nIntermediate.\n<think>step 2</think>\nFinal answer.';
+  assert.equal(stripThinkingTokens(raw), 'Intermediate.\n\nFinal answer.');
+});
+
+test('stripThinkingTokens: mixed Gemma 4 and Qwen3 blocks', () => {
+  const raw = '<|channel>thought\ngemma thinking\n<channel|><think>qwen thinking</think>actual reply';
+  assert.equal(stripThinkingTokens(raw), 'actual reply');
+});
+
+test('stripThinkingTokens: trims surrounding whitespace after stripping', () => {
+  const raw = '   <think>noise</think>   real content   ';
+  assert.equal(stripThinkingTokens(raw), 'real content');
+});
+
+test('stripThinkingTokens: leaves normal angle-bracket content alone', () => {
+  const html = '<b>bold</b> and <em>italic</em>';
+  assert.equal(stripThinkingTokens(html), html);
+});

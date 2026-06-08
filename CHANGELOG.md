@@ -8,6 +8,17 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ### Fixed
 
+- **Thinking-token contamination** (`stripThinkingTokens`): assistant responses
+  are now stripped of internal-reasoning blocks before being stored in memory.
+  Without this, models that emit thinking tokens inline in `content` —
+  Gemma 4 (`<|channel>thought … <channel|>`) and Qwen3 / DeepSeek-R1
+  (`<think> … </think>`) — would persist those tokens to the turn history,
+  which caused the model to keep generating thinking blocks on every future
+  turn. The stripping runs unconditionally (regardless of `disableThinking`)
+  so a mis-configured upstream or a model that ignores `enable_thinking:false`
+  can never corrupt the memory store. `stripThinkingTokens` lives in
+  `lib/proxy-helpers.js` and is covered by ten new unit tests.
+
 - **Streaming**: SSE responses are now piped through to the client unbuffered.
   Previously every chunk was concatenated before the response head was sent,
   defeating `stream=true` entirely. Streamed assistant turns are now

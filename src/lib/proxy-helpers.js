@@ -150,10 +150,41 @@ function makeSseAccumulator() {
   };
 }
 
+
+/**
+ * stripThinkingTokens — remove internal-reasoning blocks from an assistant
+ * response before it is stored in memory.
+ *
+ * Without this, thinking tokens (emitted inline in `content` by some models)
+ * get persisted to the turn history and are re-injected on future turns,
+ * which causes the model to keep generating more thinking tokens — a
+ * self-reinforcing loop that fills every response with noise.
+ *
+ * Patterns handled:
+ *   Gemma 4        <|channel>thought\n … <channel|>
+ *   Qwen3 / QwQ /
+ *   DeepSeek-R1    <think> … </think>
+ *
+ * The function is intentionally model-agnostic: it strips all known patterns
+ * regardless of whether disableThinking is set, so a mis-configured upstream
+ * or a model that ignores enable_thinking:false can never corrupt the memory
+ * store.
+ */
+function stripThinkingTokens(text) {
+  if (!text) return text;
+  // Gemma 4: <|channel>thought\n … <channel|>
+  // The opening tag always ends with a newline; content may be multi-line.
+  text = text.replace(/<\|channel>thought[\s\S]*?<channel\|>/g, '');
+  // Qwen3 / DeepSeek-R1 / QwQ: <think> … </think>
+  text = text.replace(/<think>[\s\S]*?<\/think>/g, '');
+  return text.trim();
+}
+
 module.exports = {
   expandHome,
   extractContentText,
   getSessionKey,
   buildUpstreamHeaders,
   makeSseAccumulator,
+  stripThinkingTokens,
 };
