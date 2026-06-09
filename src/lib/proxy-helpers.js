@@ -185,10 +185,18 @@ function stripThinkingTokens(text) {
   // Handle all of them in one alternation, then strip any orphaned closers.
   text = text.replace(/\uf06cthought[\s\S]*?(?:!<\/thought>?|<\/thought>?)/g, '');
   text = text.replace(/\uf06cthought[\s\S]*/g, '');
-  // Strip orphaned closers (e.g. when opener was stripped but closer survived
-  // because a prior regex left the tail, or the opener arrived in a prior chunk).
+  // Strip orphaned closers/openers — e.g. when opener was in a prior chunk or
+  // a partial regex match left a tail behind.
+  // Text form: <channel|> without a preceding <|channel>thought
+  text = text.replace(/<channel\|>/g, '');
+  // Text form opener without closer (shouldn't survive the open-ended regex above,
+  // but belt-and-suspenders):
+  text = text.replace(/<\|channel>/g, '');
+  // PUA form closers
   text = text.replace(/!<\/thought>?/g, '');
   text = text.replace(/<\/thought>/g, '');
+  // PUA opener residue \uf06c without "thought" following (chunk boundary split)
+  text = text.replace(/\uf06c/g, '');
 
   // Qwen3 / DeepSeek-R1 / QwQ: <think> … </think>
   text = text.replace(/<think>[\s\S]*?<\/think>/g, '');

@@ -239,24 +239,24 @@ async function start(config = loadConfig()) {
         // 3. Rewrite + forward.
         const rewritten = { ...parsed, messages: selectedMessages };
         if (config.upstream.disableThinking) {
-          rewritten.chat_template_kwargs = {
-            ...rewritten.chat_template_kwargs,
-            enable_thinking: false,
-          };
-          // Also suppress reasoning at the request level (fixes abliterated Gemma 4
-          // where enable_thinking:false alone causes the model to loop on an empty
-          // thought prefix — making the model repeat thinking tokens indefinitely).
-          // llama.cpp accepts this per-request; servers that don't recognise it
-          // silently ignore it, so it is safe for all backends.
-          rewritten.reasoning = 'off';
-          // Remove tool definitions from the upstream request. When the model is a
-          // pure generation backend (anamnesis manages all context/memory), tool
-          // calls don't make sense there — and Gemma 4's Jinja template injects a
-          // thinking prefix specifically when tools are present in a long-context
-          // prompt, which burns all available tokens on thinking even with
-          // reasoning:off. Removing tools eliminates the trigger entirely.
+          // Strategy: let the server's built-in reasoning extractor handle thinking tokens.
+          // Sending enable_thinking:false disables the server's reasoning extractor, which
+          // causes thinking tokens to spill into `content` in a mangled form that's hard to
+          // strip reliably. Instead, we let the model think normally — the server extracts
+          // thinking into `reasoning_content` (separate field), leaving `content` clean.
+          // We still strip as a safety net for any orphaned tokens that leak through.
+          //
+          // We DO still strip tool definitions — Odysseus sends them but anamnesis manages
+          // all context, so they serve no purpose upstream and add prompt token overhead.
           delete rewritten.tools;
           delete rewritten.tool_choice;
+          // Boost max_tokens so thinking budget + actual response both fit.
+          // completion_tokens in llama-server counts BOTH thinking + content tokens.
+          // Gemma 4 typically spends 1000-2000 tokens thinking even for short replies.
+          // Add 3000 tokens of headroom on top of whatever the client requested.
+          const THINKING_OVERHEAD = 3000;
+          const clientBudget = rewritten.max_tokens ?? 600;
+          rewritten.max_tokens = clientBudget + THINKING_OVERHEAD;
         }
         log.info('MSGS OUT: ' + JSON.stringify(selectedMessages.map(m => m.role + ':' + m.content.slice(0,80))));
         const rewrittenBody = Buffer.from(JSON.stringify(rewritten));

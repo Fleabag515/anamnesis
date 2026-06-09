@@ -300,3 +300,23 @@ test('stripThinkingTokens: Gemma 4 PUA only in content leaves empty', () => {
   const input = '\uf06cthought\n!</thought';
   assert.strictEqual(stripThinkingTokens(input), '');
 });
+
+// Text-form orphaned closer/opener (the forms stored when stripping failed)
+test('stripThinkingTokens: orphaned text-form closer <channel|> stripped', () => {
+  // e.g. model emitted only the closer — the opener was in a previous chunk
+  assert.strictEqual(stripThinkingTokens('<channel|>'), '');
+});
+
+test('stripThinkingTokens: orphaned text-form opener <|channel> stripped', () => {
+  assert.strictEqual(stripThinkingTokens('<|channel>'), '');
+});
+
+test('stripThinkingTokens: PUA opener residue \\uf06c stripped', () => {
+  // opener was split across chunks; only the PUA char survived
+  assert.strictEqual(stripThinkingTokens(''), '');
+});
+
+test('stripThinkingTokens: real content with <channel|> orphan preserved', () => {
+  // ensure real text before the orphaned closer is kept
+  assert.strictEqual(stripThinkingTokens('Hello!<channel|>'), 'Hello!');
+});
