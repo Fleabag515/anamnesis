@@ -250,6 +250,8 @@ async function start(config = loadConfig()) {
 
         // 3. Rewrite + forward.
         const rewritten = { ...parsed, messages: selectedMessages };
+        // Override model name if upstream.model is set in config (e.g. Ollama needs exact model name).
+        if (config.upstream.model) rewritten.model = config.upstream.model;
         if (config.upstream.disableThinking) {
           // Thinking management strategy:
           // - Do NOT strip tools/tool_choice — Mark needs full tool access to act autonomously.
