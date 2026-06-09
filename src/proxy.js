@@ -35,6 +35,7 @@ const {
   buildUpstreamHeaders,
   makeSseAccumulator,
   stripThinkingTokens,
+  makeStreamingThinkingFilter,
 } = require('./lib/proxy-helpers.js');
 const log = require('./lib/logger.js').make('anamnesis');
 
@@ -258,8 +259,12 @@ async function start(config = loadConfig()) {
 
         if (streaming) {
           const sse = makeSseAccumulator();
+          // When thinking suppression is active, filter chunks before reaching the client.
+          const filteredRes = config.upstream.disableThinking
+            ? { ...res, write: makeStreamingThinkingFilter(res) }
+            : res;
           try {
-            await streamThrough(req.url, req.method, headers, rewrittenBody, res, (c) =>
+            await streamThrough(req.url, req.method, headers, rewrittenBody, filteredRes, (c) =>
               sse.feed(c)
             );
           } catch (err) {
@@ -278,16 +283,24 @@ async function start(config = loadConfig()) {
           res.writeHead(502, { 'Content-Type': 'application/json' });
           return res.end(JSON.stringify({ error: err.message }));
         }
-        res.writeHead(upRes.status, upRes.headers);
-        res.end(upRes.body);
-
+        // Strip thinking tokens from the response before sending to client AND before storing.
+        let clientBody = upRes.body;
+        let storedContent = '';
         try {
           const upParsed = JSON.parse(upRes.body.toString());
-          const content = stripThinkingTokens(upParsed.choices?.[0]?.message?.content ?? '');
-          recordAssistantTurn(sessionKey, content);
-        } catch {
-          /* non-JSON response; nothing to persist */
-        }
+          const rawContent = upParsed.choices?.[0]?.message?.content ?? '';
+          storedContent = stripThinkingTokens(rawContent);
+          if (rawContent !== storedContent) {
+            // Rewrite body with stripped content so client never sees thinking tokens
+            upParsed.choices[0].message.content = storedContent;
+            clientBody = Buffer.from(JSON.stringify(upParsed));
+          }
+        } catch { /* non-JSON — pass through as-is */ }
+        const outHeaders = { ...upRes.headers, 'Content-Length': Buffer.byteLength(clientBody) };
+        res.writeHead(upRes.status, outHeaders);
+        res.end(clientBody);
+
+        if (storedContent) recordAssistantTurn(sessionKey, storedContent);
         return;
       }
 

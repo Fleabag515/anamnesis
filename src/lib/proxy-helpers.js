@@ -174,13 +174,98 @@ function stripThinkingTokens(text) {
   if (!text) return text;
   // Gemma 4: <|channel>thought\n … <channel|>
   // The opening tag always ends with a newline; content may be multi-line.
+  // First pass: complete blocks (opening + closing tag).
   text = text.replace(/<\|channel>thought[\s\S]*?<channel\|>/g, '');
+  // Second pass: orphaned opener with no closing tag — happens when the model
+  // hits max_tokens mid-thought. Everything from the opener to end-of-string
+  // is reasoning noise; strip it all.
+  text = text.replace(/<\|channel>thought[\s\S]*/g, '');
   // Qwen3 / DeepSeek-R1 / QwQ: <think> … </think>
+  // Complete blocks first, then any truncated opener.
   text = text.replace(/<think>[\s\S]*?<\/think>/g, '');
+  text = text.replace(/<think>[\s\S]*/g, '');
   return text.trim();
 }
 
+
+/**
+ * makeStreamingThinkingFilter — wraps a writable response so that SSE chunks
+ * containing thinking tokens are silently dropped before reaching the client.
+ *
+ * Returns a replacement `write(chunk)` function. Call it in place of
+ * `clientRes.write(chunk)` inside a streaming pipe.
+ *
+ * State machine:
+ *   NORMAL     — forward chunks as-is
+ *   IN_THINKING — suppress chunks; exit on closing tag
+ *
+ * Token pairs handled:
+ *   Gemma 4:   <|channel>thought … <channel|>
+ *   Qwen3:     <think> … </think>
+ */
+function makeStreamingThinkingFilter(clientRes) {
+  let inThinking = false;
+  let leftovers = ''; // partial text held back waiting to confirm it isn't an opener
+
+  const OPENERS = ['<|channel>thought', '<think>'];
+  const CLOSERS = { '<|channel>thought': '<channel|>', '<think>': '</think>' };
+  let activeCloser = null;
+
+  return function filteredWrite(chunk) {
+    let text = leftovers + chunk.toString('utf8');
+    leftovers = '';
+    let out = '';
+
+    while (text.length > 0) {
+      if (inThinking) {
+        const ci = text.indexOf(activeCloser);
+        if (ci === -1) {
+          text = ''; // all thinking noise — discard
+        } else {
+          text = text.slice(ci + activeCloser.length); // skip closer, resume after
+          inThinking = false;
+          activeCloser = null;
+        }
+      } else {
+        // Check if any opener starts within this text
+        let earliest = -1;
+        let matchedOpener = null;
+        for (const op of OPENERS) {
+          const idx = text.indexOf(op);
+          if (idx !== -1 && (earliest === -1 || idx < earliest)) {
+            earliest = idx;
+            matchedOpener = op;
+          }
+        }
+        if (earliest === -1) {
+          // No opener. But check for a partial opener at the tail (hold back).
+          let held = 0;
+          for (const op of OPENERS) {
+            for (let len = Math.min(op.length - 1, text.length); len > 0; len--) {
+              if (text.endsWith(op.slice(0, len))) {
+                held = Math.max(held, len);
+                break;
+              }
+            }
+          }
+          out += text.slice(0, text.length - held);
+          leftovers = text.slice(text.length - held);
+          text = '';
+        } else {
+          out += text.slice(0, earliest); // content before opener is safe
+          text = text.slice(earliest + matchedOpener.length); // skip opener
+          inThinking = true;
+          activeCloser = CLOSERS[matchedOpener];
+        }
+      }
+    }
+
+    if (out) clientRes.write(out);
+  };
+}
+
 module.exports = {
+  makeStreamingThinkingFilter,
   expandHome,
   extractContentText,
   getSessionKey,
