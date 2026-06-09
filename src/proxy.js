@@ -251,22 +251,15 @@ async function start(config = loadConfig()) {
         // 3. Rewrite + forward.
         const rewritten = { ...parsed, messages: selectedMessages };
         if (config.upstream.disableThinking) {
-          // Strategy: let the server's built-in reasoning extractor handle thinking tokens.
-          // Sending enable_thinking:false disables the server's reasoning extractor, which
-          // causes thinking tokens to spill into `content` in a mangled form that's hard to
-          // strip reliably. Instead, we let the model think normally — the server extracts
-          // thinking into `reasoning_content` (separate field), leaving `content` clean.
-          // We still strip as a safety net for any orphaned tokens that leak through.
-          //
-          // We DO still strip tool definitions — Odysseus sends them but anamnesis manages
-          // all context, so they serve no purpose upstream and add prompt token overhead.
-          delete rewritten.tools;
-          delete rewritten.tool_choice;
-          // Boost max_tokens so thinking budget + actual response both fit.
-          // completion_tokens in llama-server counts BOTH thinking + content tokens.
-          // Gemma 4 typically spends 1000-2000 tokens thinking even for short replies.
-          // Add 3000 tokens of headroom on top of whatever the client requested.
-          const THINKING_OVERHEAD = 3000;
+          // Thinking management strategy:
+          // - Do NOT strip tools/tool_choice — Mark needs full tool access to act autonomously.
+          // - Let the server's built-in reasoning extractor handle thinking tokens:
+          //   thinking goes into `reasoning_content` (ephemeral, never stored in DB),
+          //   leaving `content` clean. Thinking is free and doesn't pollute future context.
+          // - Boost max_tokens so thinking budget + actual response both fit within the
+          //   completion window. completion_tokens counts BOTH thinking + content tokens.
+          //   THINKING_OVERHEAD gives the model room for deep reasoning chains.
+          const THINKING_OVERHEAD = 4000; // model self-terminates well before this
           const clientBudget = rewritten.max_tokens ?? 600;
           rewritten.max_tokens = clientBudget + THINKING_OVERHEAD;
         }
