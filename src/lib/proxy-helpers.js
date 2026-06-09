@@ -202,6 +202,16 @@ function stripThinkingTokens(text) {
   text = text.replace(/<think>[\s\S]*?<\/think>/g, '');
   text = text.replace(/<think>[\s\S]*/g, '');
 
+  // Gemma tool-call tokens that leak into content on backends without a
+  // reasoning/tool extractor (e.g. Ollama). Strip the whole block or residue.
+  // Full form: <tool_call>…</tool_call>
+  text = text.replace(/<tool_call>[\s\S]*?<\/tool_call>/g, '');
+  // Partial closer residue (e.g. "}<tool_call|>" or "<tool_call|>")
+  text = text.replace(/[}\s]*<tool_call\|>/g, '');
+  text = text.replace(/<tool_call>/g, '');
+  // Bare JSON artifact from tool call body: lone "[]", "{}", or "null" after stripping
+  text = text.replace(/^[\s\[\]{}null]*$/, '');
+
   return text.trim();
 }
 

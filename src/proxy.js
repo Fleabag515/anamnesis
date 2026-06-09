@@ -286,7 +286,12 @@ async function start(config = loadConfig()) {
             log.error('streaming upstream error:', err.message);
             return;
           }
-          recordAssistantTurn(sessionKey, stripThinkingTokens(sse.content));
+          const strippedContent = stripThinkingTokens(sse.content);
+          // Only store if there's real content — guards against storing null/'[]'/
+          // tool-call residue or partial chunks from dropped connections.
+          if (strippedContent && strippedContent.trim().length >= 4) {
+            recordAssistantTurn(sessionKey, strippedContent);
+          }
           return;
         }
 
