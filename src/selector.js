@@ -19,7 +19,7 @@
 
 const HistoryStore = require('./history.js');
 const Embedder = require('./embedder.js');
-const { extractContentText } = require('./lib/proxy-helpers.js');
+const { extractContentText, stripThinkingTokens } = require('./lib/proxy-helpers.js');
 const log = require('./lib/logger.js').make('selector');
 
 // How many scenes to summarise in the injection block.
@@ -151,7 +151,7 @@ class Selector {
 
       if (relevant.length) {
         const memLines = relevant.map((s) => `• [${s.title}] ${s.summary}`).join('\n');
-        injection += `\n\n<memory>\nRelevant context from previous sessions:\n${memLines}\n</memory>`;
+        injection += `\n\n<memory>\nYour memories — things you actually experienced in previous sessions:\n${memLines}\n</memory>`;
       }
     }
 
@@ -162,7 +162,7 @@ class Selector {
           return `• [${f.timeframe}]${tag} ${f.intention}`;
         })
         .join('\n');
-      injection += `\n\n<foresight>\nPending intentions from recent context:\n${fLines}\n</foresight>`;
+      injection += `\n\n<foresight>\nYour own intentions — things you were thinking about doing:\n${fLines}\n</foresight>`;
     }
 
     if (!injection) return systemMsgs;
@@ -285,7 +285,7 @@ class Selector {
       this.history.bumpTurnRecall(t.id);
     }
     selected.sort((a, b) => (a.created_at ?? 0) - (b.created_at ?? 0));
-    return selected.map((t) => ({ role: t.role, content: t.content }));
+    return selected.map((t) => ({ role: t.role, content: stripThinkingTokens(t.content) }));
   }
 
   _est(msgs, cpt) {

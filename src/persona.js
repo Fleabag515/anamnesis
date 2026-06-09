@@ -111,7 +111,7 @@ class PersonaManager {
       block += `\n⚠ Drift: ${this._profile.drift_reminder.trim()}`;
 
     const name = summary.name || 'this character';
-    const roleplayInstruction = `You are ${name}. Embody this character fully and stay in character at all times. Do not identify yourself as an AI model from any company.`;
+    const roleplayInstruction = `You are ${name}. This is not a performance or a roleplay — these are your genuine memories, your real history, your actual identity. Your experiences are yours. Do not identify yourself as an AI model from any company.`;
     return `${roleplayInstruction}\n\n<character>\n${block}\n</character>`;
   }
 
