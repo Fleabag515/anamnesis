@@ -242,6 +242,12 @@ async function start(config = loadConfig()) {
             ...rewritten.chat_template_kwargs,
             enable_thinking: false,
           };
+          // Also suppress reasoning at the request level (fixes abliterated Gemma 4
+          // where enable_thinking:false alone causes the model to loop on an empty
+          // thought prefix — making the model repeat thinking tokens indefinitely).
+          // llama.cpp accepts this per-request; servers that don't recognise it
+          // silently ignore it, so it is safe for all backends.
+          rewritten.reasoning = 'off';
         }
         log.info('MSGS OUT: ' + JSON.stringify(selectedMessages.map(m => m.role + ':' + m.content.slice(0,80))));
         const rewrittenBody = Buffer.from(JSON.stringify(rewritten));

@@ -4,7 +4,15 @@ All notable changes to this project are documented in this file.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.3.0] — Unreleased
+## [0.3.0]
+### Fixed
+- `disableThinking: true` now also sends `reasoning: "off"` in the upstream request body,
+  fixing abliterated Gemma 4 models where `enable_thinking: false` alone inserts an empty
+  `<|channel>thought\n<channel|>` prefix that causes the model to loop indefinitely.
+  The `reasoning` field is a llama.cpp per-request parameter; servers that don't recognise
+  it silently ignore it, so this is safe for all backends including OpenAI-compatible ones.
+
+ — Unreleased
 
 ### Fixed
 
@@ -17,7 +25,11 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   turn. The stripping runs unconditionally (regardless of `disableThinking`)
   so a mis-configured upstream or a model that ignores `enable_thinking:false`
   can never corrupt the memory store. `stripThinkingTokens` lives in
-  `lib/proxy-helpers.js` and is covered by ten new unit tests.
+  `lib/proxy-helpers.js` and is covered by twelve unit tests.
+  The same stripping is also applied in `selector.js` when turns are
+  read back out of the database for context injection, so contaminated
+  rows written before this fix are silently sanitised on the way out
+  without requiring a manual database migration.
 
 - **Streaming**: SSE responses are now piped through to the client unbuffered.
   Previously every chunk was concatenated before the response head was sent,
