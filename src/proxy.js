@@ -202,6 +202,18 @@ async function start(config = loadConfig()) {
     req.on('data', (d) => reqChunks.push(d));
     req.on('end', async () => {
       const rawBody = Buffer.concat(reqChunks);
+      try {
+        await handleRequest(req, res, rawBody);
+      } catch (err) {
+        log.error('unhandled request error (prevented crash):', err.message, err.stack?.split('\n')[1] ?? '');
+        if (!res.headersSent) {
+          try { res.writeHead(502, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'proxy internal error' })); } catch {}
+        }
+      }
+    });
+  });
+
+  async function handleRequest(req, res, rawBody) {
 
       if (req.method === 'POST' && req.url.endsWith('/chat/completions')) {
         let parsed;
@@ -269,7 +281,7 @@ async function start(config = loadConfig()) {
           const sse = makeSseAccumulator();
           // When thinking suppression is active, filter chunks before reaching the client.
           const filteredRes = config.upstream.disableThinking
-            ? { ...res, write: makeStreamingThinkingFilter(res) }
+            ? Object.assign(Object.create(res), { write: makeStreamingThinkingFilter(res) })
             : res;
           try {
             await streamThrough(req.url, req.method, headers, rewrittenBody, filteredRes, (c) =>
@@ -317,8 +329,7 @@ async function start(config = loadConfig()) {
       }
 
       passthrough(req, res, rawBody);
-    });
-  });
+  }  // end handleRequest
 
   async function passthrough(req, res, body) {
     const headers = buildUpstreamHeaders(req.headers, { upstreamApiKey: config.upstream.apiKey });
