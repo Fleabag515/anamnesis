@@ -172,18 +172,28 @@ function makeSseAccumulator() {
  */
 function stripThinkingTokens(text) {
   if (!text) return text;
-  // Gemma 4: <|channel>thought\n … <channel|>
-  // Text form (non-streaming / some backends):
+
+  // Gemma 4 text form: <|channel>thought … <channel|>
   text = text.replace(/<\|channel>thought[\s\S]*?<channel\|>/g, '');
   text = text.replace(/<\|channel>thought[\s\S]*/g, '');
-  // Gemma 4: PUA-encoded form — llama.cpp streaming decodes special tokens
-  // as Unicode Private Use Area characters.  <|channel> → U+F06C (\uf06c)
-  // and <channel|> → "!</thought>" (may appear with or without trailing ">").
-  text = text.replace(/\uf06cthought[\s\S]*?!<\/thought>?/g, '');
+
+  // Gemma 4 PUA form — llama.cpp streaming decodes <|channel> as U+F06C (\uf06c).
+  // The closing tag appears in multiple observed variants depending on context:
+  //   !</thought   (no trailing >)
+  //   !</thought>  (with trailing >)
+  //   </thought>   (without leading !)
+  // Handle all of them in one alternation, then strip any orphaned closers.
+  text = text.replace(/\uf06cthought[\s\S]*?(?:!<\/thought>?|<\/thought>?)/g, '');
   text = text.replace(/\uf06cthought[\s\S]*/g, '');
+  // Strip orphaned closers (e.g. when opener was stripped but closer survived
+  // because a prior regex left the tail, or the opener arrived in a prior chunk).
+  text = text.replace(/!<\/thought>?/g, '');
+  text = text.replace(/<\/thought>/g, '');
+
   // Qwen3 / DeepSeek-R1 / QwQ: <think> … </think>
   text = text.replace(/<think>[\s\S]*?<\/think>/g, '');
   text = text.replace(/<think>[\s\S]*/g, '');
+
   return text.trim();
 }
 
