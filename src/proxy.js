@@ -249,6 +249,14 @@ async function start(config = loadConfig()) {
           // llama.cpp accepts this per-request; servers that don't recognise it
           // silently ignore it, so it is safe for all backends.
           rewritten.reasoning = 'off';
+          // Remove tool definitions from the upstream request. When the model is a
+          // pure generation backend (anamnesis manages all context/memory), tool
+          // calls don't make sense there — and Gemma 4's Jinja template injects a
+          // thinking prefix specifically when tools are present in a long-context
+          // prompt, which burns all available tokens on thinking even with
+          // reasoning:off. Removing tools eliminates the trigger entirely.
+          delete rewritten.tools;
+          delete rewritten.tool_choice;
         }
         log.info('MSGS OUT: ' + JSON.stringify(selectedMessages.map(m => m.role + ':' + m.content.slice(0,80))));
         const rewrittenBody = Buffer.from(JSON.stringify(rewritten));
@@ -296,7 +304,11 @@ async function start(config = loadConfig()) {
             clientBody = Buffer.from(JSON.stringify(upParsed));
           }
         } catch { /* non-JSON — pass through as-is */ }
-        const outHeaders = { ...upRes.headers, 'Content-Length': Buffer.byteLength(clientBody) };
+        // Strip transfer-encoding when we're rewriting the body; set fresh Content-Length.
+        const outHeaders = { ...upRes.headers };
+        delete outHeaders['transfer-encoding'];
+        delete outHeaders['content-encoding']; // body is already decoded by bufferedForward
+        outHeaders['content-length'] = Buffer.byteLength(clientBody);
         res.writeHead(upRes.status, outHeaders);
         res.end(clientBody);
 

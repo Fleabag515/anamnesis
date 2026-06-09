@@ -254,3 +254,49 @@ test('stripThinkingTokens: leaves normal angle-bracket content alone', () => {
   const html = '<b>bold</b> and <em>italic</em>';
   assert.equal(stripThinkingTokens(html), html);
 });
+
+test('stripThinkingTokens: thinking-only content collapses to empty string', () => {
+  const raw = '<|channel>thought\nsome internal reasoning\n<channel|>';
+  assert.equal(stripThinkingTokens(raw), '');
+});
+
+test('stripThinkingTokens: Qwen3 thinking-only collapses to empty string', () => {
+  assert.equal(stripThinkingTokens('<think>chain of thought</think>'), '');
+});
+
+test('stripThinkingTokens: strips truncated Gemma 4 block (no closing tag)', () => {
+  // Model hit max_tokens mid-thought — opener present, <channel|> never emitted
+  const raw = 'some prefix<|channel>thought\npartial reasoning that was cut off';
+  assert.equal(stripThinkingTokens(raw), 'some prefix');
+});
+
+test('stripThinkingTokens: strips truncated Qwen3 block (no closing tag)', () => {
+  const raw = 'prefix text\n<think>partial chain of thought never closed';
+  assert.equal(stripThinkingTokens(raw), 'prefix text');
+});
+
+test('stripThinkingTokens: complete block before truncated block both stripped', () => {
+  const raw = '<|channel>thought\nfirst thought\n<channel|>real reply<|channel>thought\ntruncated';
+  assert.equal(stripThinkingTokens(raw), 'real reply');
+});
+
+// PUA-encoded Gemma 4 tokens (llama.cpp streaming decodes <|channel> as U+F06C)
+test('stripThinkingTokens: Gemma 4 PUA complete block stripped', () => {
+  const input = '\uf06cthought\nI am thinking\n!</thought\nActual response';
+  assert.strictEqual(stripThinkingTokens(input), 'Actual response');
+});
+
+test('stripThinkingTokens: Gemma 4 PUA orphaned opener stripped', () => {
+  const input = '\uf06cthought\ntruncated by max_tokens';
+  assert.strictEqual(stripThinkingTokens(input), '');
+});
+
+test('stripThinkingTokens: Gemma 4 PUA block with closing > variant', () => {
+  const input = '\uf06cthought\nthinking...\n!</thought>\nReply here';
+  assert.strictEqual(stripThinkingTokens(input), 'Reply here');
+});
+
+test('stripThinkingTokens: Gemma 4 PUA only in content leaves empty', () => {
+  const input = '\uf06cthought\n!</thought';
+  assert.strictEqual(stripThinkingTokens(input), '');
+});

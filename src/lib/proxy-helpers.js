@@ -173,15 +173,15 @@ function makeSseAccumulator() {
 function stripThinkingTokens(text) {
   if (!text) return text;
   // Gemma 4: <|channel>thought\n … <channel|>
-  // The opening tag always ends with a newline; content may be multi-line.
-  // First pass: complete blocks (opening + closing tag).
+  // Text form (non-streaming / some backends):
   text = text.replace(/<\|channel>thought[\s\S]*?<channel\|>/g, '');
-  // Second pass: orphaned opener with no closing tag — happens when the model
-  // hits max_tokens mid-thought. Everything from the opener to end-of-string
-  // is reasoning noise; strip it all.
   text = text.replace(/<\|channel>thought[\s\S]*/g, '');
+  // Gemma 4: PUA-encoded form — llama.cpp streaming decodes special tokens
+  // as Unicode Private Use Area characters.  <|channel> → U+F06C (\uf06c)
+  // and <channel|> → "!</thought>" (may appear with or without trailing ">").
+  text = text.replace(/\uf06cthought[\s\S]*?!<\/thought>?/g, '');
+  text = text.replace(/\uf06cthought[\s\S]*/g, '');
   // Qwen3 / DeepSeek-R1 / QwQ: <think> … </think>
-  // Complete blocks first, then any truncated opener.
   text = text.replace(/<think>[\s\S]*?<\/think>/g, '');
   text = text.replace(/<think>[\s\S]*/g, '');
   return text.trim();
@@ -207,8 +207,15 @@ function makeStreamingThinkingFilter(clientRes) {
   let inThinking = false;
   let leftovers = ''; // partial text held back waiting to confirm it isn't an opener
 
-  const OPENERS = ['<|channel>thought', '<think>'];
-  const CLOSERS = { '<|channel>thought': '<channel|>', '<think>': '</think>' };
+  // Text forms (non-streaming / most backends) and PUA forms (llama.cpp streaming).
+  // llama.cpp maps <|channel> → U+F06C and <channel|> → "!</thought" (no closing >)
+  // when streaming Gemma 4 tokens as delta chunks.
+  const OPENERS = ['<|channel>thought', 'thought', '<think>'];
+  const CLOSERS = {
+    '<|channel>thought': '<channel|>',
+    'thought': '!</thought',
+    '<think>': '</think>',
+  };
   let activeCloser = null;
 
   return function filteredWrite(chunk) {
