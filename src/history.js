@@ -7,11 +7,15 @@
  *                 flags future-intention scan status. These are *independent*
  *                 because the two extractors run in parallel and shouldn't
  *                 starve each other.
+ *                 `kind` ('chat' | 'tool_call' | 'tool_result') + tool columns
+ *                 make agentic traffic first-class memory (virtual-context v2).
  *   engrams    — atomic facts derived from assistant turns. `embedding_model`
  *                 records which model produced the vector so we never compare
  *                 vectors from different model families.
  *   episodes   — thematic clusters of engrams (turn → cell → scene).
  *   foresights  — extracted intentions / future plans.
+ *   artifacts   — full text of evicted/oversized content (the "swap" tier),
+ *                 chunk-embedded for the recall tool.
  */
 
 const Database = require('better-sqlite3');
@@ -105,6 +109,29 @@ class HistoryStore {
         detail        TEXT    NOT NULL,
         consolidated  INTEGER NOT NULL DEFAULT 0
       );
+
+      CREATE TABLE IF NOT EXISTS artifacts (
+        id            TEXT    PRIMARY KEY,
+        session_key   TEXT    NOT NULL,
+        turn_id       INTEGER,
+        tool_name     TEXT    NOT NULL DEFAULT '',
+        content       TEXT    NOT NULL,
+        content_hash  TEXT    NOT NULL,
+        token_est     INTEGER NOT NULL DEFAULT 0,
+        summary       TEXT    NOT NULL DEFAULT '',
+        recall_count  INTEGER NOT NULL DEFAULT 0,
+        created_at    INTEGER NOT NULL DEFAULT (unixepoch()),
+        last_recall_at INTEGER NOT NULL DEFAULT 0
+      );
+
+      CREATE TABLE IF NOT EXISTS artifact_chunks (
+        artifact_id     TEXT    NOT NULL REFERENCES artifacts(id) ON DELETE CASCADE,
+        idx             INTEGER NOT NULL,
+        content         TEXT    NOT NULL,
+        embedding       BLOB,
+        embedding_model TEXT,
+        PRIMARY KEY (artifact_id, idx)
+      );
     `);
     this._migrate();
 
@@ -122,6 +149,9 @@ class HistoryStore {
       CREATE INDEX IF NOT EXISTS idx_foresights_active   ON foresights(session_key, fulfilled);
       CREATE INDEX IF NOT EXISTS idx_char_obs_session   ON character_observations(session_key, observed_at);
       CREATE INDEX IF NOT EXISTS idx_char_obs_pending   ON character_observations(consolidated, observed_at);
+      CREATE INDEX IF NOT EXISTS idx_artifacts_session  ON artifacts(session_key, created_at);
+      CREATE INDEX IF NOT EXISTS idx_artifacts_hash     ON artifacts(session_key, content_hash);
+      CREATE INDEX IF NOT EXISTS idx_artifact_chunks    ON artifact_chunks(artifact_id);
     `);
   }
 
@@ -184,27 +214,52 @@ class HistoryStore {
       this.db.exec('ALTER TABLE engrams ADD COLUMN embedding_model TEXT');
     if (!has('episodes', 'embedding_model'))
       this.db.exec('ALTER TABLE episodes ADD COLUMN embedding_model TEXT');
+
+    // 0.7.0 (virtual context): agentic turns become first-class memory.
+    if (!has('turns', 'kind'))
+      this.db.exec("ALTER TABLE turns ADD COLUMN kind TEXT NOT NULL DEFAULT 'chat'");
+    if (!has('turns', 'tool_name'))
+      this.db.exec("ALTER TABLE turns ADD COLUMN tool_name TEXT NOT NULL DEFAULT ''");
+    if (!has('turns', 'tool_call_id'))
+      this.db.exec("ALTER TABLE turns ADD COLUMN tool_call_id TEXT NOT NULL DEFAULT ''");
   }
 
   // ─── Turns ────────────────────────────────────────────────────────────────
 
-  insertTurn(sessionKey, role, content, embedding, tokenEst, embeddingModel = null) {
+  insertTurn(sessionKey, role, content, embedding, tokenEst, embeddingModel = null, opts = {}) {
     const blob = embedding ? Buffer.from(embedding.buffer) : null;
     return this.db
       .prepare(
         `
-      INSERT INTO turns (session_key, role, content, embedding, token_est, embedding_model)
-      VALUES (?, ?, ?, ?, ?, ?)
+      INSERT INTO turns (session_key, role, content, embedding, token_est, embedding_model, kind, tool_name, tool_call_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     `
       )
-      .run(sessionKey, role, content, blob, tokenEst, embeddingModel).lastInsertRowid;
+      .run(
+        sessionKey,
+        role,
+        content,
+        blob,
+        tokenEst,
+        embeddingModel,
+        opts.kind ?? 'chat',
+        opts.toolName ?? '',
+        opts.toolCallId ?? ''
+      ).lastInsertRowid;
+  }
+
+  updateTurnEmbedding(id, embedding, embeddingModel) {
+    const blob = embedding ? Buffer.from(embedding.buffer) : null;
+    this.db
+      .prepare('UPDATE turns SET embedding=?, embedding_model=? WHERE id=?')
+      .run(blob, embeddingModel, id);
   }
 
   getSessionTurns(sessionKey) {
     return this.db
       .prepare(
         `
-      SELECT id, role, content, embedding, embedding_model, token_est, recall_count, importance, created_at
+      SELECT id, role, content, embedding, embedding_model, token_est, recall_count, importance, kind, tool_name, created_at
       FROM turns WHERE session_key=? ORDER BY created_at ASC, id ASC
     `
       )
@@ -436,6 +491,88 @@ class HistoryStore {
     this.db.prepare('UPDATE foresights SET fulfilled=1 WHERE id=?').run(id);
   }
 
+  // ─── Artifacts (virtual-context swap tier) ────────────────────────────────
+
+  insertArtifact({ id, sessionKey, turnId, toolName, content, contentHash, tokenEst, summary }) {
+    this.db
+      .prepare(
+        `
+      INSERT INTO artifacts (id, session_key, turn_id, tool_name, content, content_hash, token_est, summary)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `
+      )
+      .run(id, sessionKey, turnId ?? null, toolName ?? '', content, contentHash, tokenEst, summary);
+    return id;
+  }
+
+  getArtifact(id) {
+    return this.db.prepare('SELECT * FROM artifacts WHERE id=?').get(id) ?? null;
+  }
+
+  findArtifactByHash(sessionKey, contentHash) {
+    return (
+      this.db
+        .prepare('SELECT * FROM artifacts WHERE session_key=? AND content_hash=? LIMIT 1')
+        .get(sessionKey, contentHash) ?? null
+    );
+  }
+
+  bumpArtifactRecall(id) {
+    this.db
+      .prepare(
+        'UPDATE artifacts SET recall_count=recall_count+1, last_recall_at=unixepoch() WHERE id=?'
+      )
+      .run(id);
+  }
+
+  insertArtifactChunk(artifactId, idx, content, embedding, embeddingModel = null) {
+    const blob = embedding ? Buffer.from(embedding.buffer) : null;
+    this.db
+      .prepare(
+        `
+      INSERT OR REPLACE INTO artifact_chunks (artifact_id, idx, content, embedding, embedding_model)
+      VALUES (?, ?, ?, ?, ?)
+    `
+      )
+      .run(artifactId, idx, content, blob, embeddingModel);
+  }
+
+  getArtifactChunksBySession(sessionKey) {
+    return this.db
+      .prepare(
+        `
+      SELECT c.artifact_id, c.idx, c.content, c.embedding, c.embedding_model
+      FROM artifact_chunks c JOIN artifacts a ON a.id = c.artifact_id
+      WHERE a.session_key=?
+    `
+      )
+      .all(sessionKey);
+  }
+
+  likeSearchArtifacts(sessionKey, term, limit = 3) {
+    return this.db
+      .prepare(
+        `
+      SELECT id, tool_name, content, summary FROM artifacts
+      WHERE session_key=? AND content LIKE ?
+      ORDER BY created_at DESC LIMIT ?
+    `
+      )
+      .all(sessionKey, `%${term}%`, limit);
+  }
+
+  artifactStats(sessionKey) {
+    const row = this.db
+      .prepare(
+        `
+      SELECT COUNT(*) AS count, COALESCE(SUM(token_est),0) AS tokens, COALESCE(SUM(recall_count),0) AS recalls
+      FROM artifacts WHERE session_key=?
+    `
+      )
+      .get(sessionKey);
+    return row ?? { count: 0, tokens: 0, recalls: 0 };
+  }
+
   // ─── Shared ───────────────────────────────────────────────────────────────
 
   /**
@@ -458,7 +595,12 @@ class HistoryStore {
 
   prune(maxAgeDays) {
     const cutoff = Math.floor(Date.now() / 1000) - maxAgeDays * 86400;
-    return this.db.prepare('DELETE FROM turns WHERE created_at<?').run(cutoff).changes;
+    const turns = this.db.prepare('DELETE FROM turns WHERE created_at<?').run(cutoff).changes;
+    // Artifacts age out on the same clock, except ones the model still recalls.
+    this.db
+      .prepare('DELETE FROM artifacts WHERE created_at<? AND last_recall_at<?')
+      .run(cutoff, cutoff);
+    return turns;
   }
 
   stats(sessionKey) {
