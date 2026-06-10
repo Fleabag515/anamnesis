@@ -1,5 +1,5 @@
 {
-  "_comment": "Anamnesis \u2014 self-organizing memory proxy. Works with any OpenAI-compatible backend.",
+  "_comment": "Anamnesis — self-organizing memory proxy. Works with any OpenAI-compatible backend.",
   "proxy": {
     "port": 8084,
     "host": "127.0.0.1"
@@ -36,7 +36,7 @@
       }
     },
     "disableThinking": true,
-    "_disableThinkingNote": "Injects chat_template_kwargs:{enable_thinking:false} \u2014 prevents Qwen3 thinking tokens from eating context/time"
+    "_disableThinkingNote": "Injects chat_template_kwargs:{enable_thinking:false} — prevents Qwen3 thinking tokens from eating context/time"
   },
   "embedding": {
     "ollamaUrl": "http://127.0.0.1:11434",
@@ -45,23 +45,53 @@
   "extraction": {
     "model": "qwen3:0.6b",
     "_modelGuide": {
-      "gemma3:1b": "0.8GB \u2014 fastest, good enough for simple fact extraction",
-      "gemma4:e2b": "7.2GB \u2014 better quality, slower cold start",
-      "qwen2.5:0.5b": "0.4GB \u2014 smallest, use if VRAM is tight",
-      "gemma3:4b": "2.5GB \u2014 balanced quality/speed",
-      "qwen3:0.6b": "0.5GB \u2014 fast, clean JSON via /api/chat think:false, ~140 t/s"
+      "gemma3:1b": "0.8GB — fastest, good enough for simple fact extraction",
+      "gemma4:e2b": "7.2GB — better quality, slower cold start",
+      "qwen2.5:0.5b": "0.4GB — smallest, use if VRAM is tight",
+      "gemma3:4b": "2.5GB — balanced quality/speed",
+      "qwen3:0.6b": "0.5GB — fast, clean JSON via /api/chat think:false, ~140 t/s"
     },
     "maxRetries": 2,
     "timeoutMs": 45000,
     "startupBacklogLimit": 200
   },
   "context": {
-    "tokenBudget": 50000,
-    "systemReserveTokens": 4096,
-    "recencyTurns": 8,
-    "rotatingSlots": 6,
+    "_note": "v0.7 virtual context: the window is DISCOVERED from the upstream (/props) and tokens are counted with the upstream tokenizer. tokenBudget is no longer a budget — it survives only as the discovery hint used when the upstream exposes neither /props nor a tokenize endpoint.",
+    "nCtxHint": 8192,
+    "tokenBudget": 8192,
+    "_tokenBudgetNote": "legacy alias of nCtxHint — kept so old configs keep working",
+    "completionReserve": 4096,
+    "_completionReserveNote": "tokens held back for the model's reply (+ thinking overhead)",
+    "watermarks": {
+      "compact": 0.7,
+      "aggressive": 0.85,
+      "emergency": 0.95
+    },
+    "_watermarksNote": "fractions of n_ctx: start compacting at 70%, signal pressure at 85%, emergency-trim at 95%",
+    "pinnedExchanges": 3,
+    "_pinnedExchangesNote": "most-recent exchanges (tool-call + results = one exchange) always kept verbatim",
+    "memoryRefreshTurns": 4,
+    "_memoryRefreshTurnsNote": "rebuild the <recall-context> block every N requests — keeps the prompt prefix byte-stable in between so llama.cpp prompt caching hits",
     "charsPerToken": 3.5,
+    "_charsPerTokenNote": "fallback estimator only; self-tunes from usage.prompt_tokens ground truth",
     "minChunkChars": 50
+  },
+  "artifacts": {
+    "spillTokens": 1500,
+    "_spillTokensNote": "tool results at or above this size are archived to the artifact store and represented by a recall() handle once evicted",
+    "recallTool": true,
+    "_recallToolNote": "inject the recall tool into agentic requests (clients that send a tools array); the proxy resolves recall calls itself — clients never see them",
+    "maxRecallHops": 4,
+    "maxChunks": 16,
+    "recallChars": 6000
+  },
+  "elastic": {
+    "enabled": true,
+    "_note": "when the upstream advertises resizable:true in /props (the Pleiades engine does), sustained pressure POSTs /resize to double n_ctx — adaptive context, no restart, no config",
+    "pressureCooldownMs": 120000,
+    "rediscoverMs": 300000,
+    "maxNCtx": 0,
+    "_maxNCtxNote": "0 = trust the engine's own ceiling (its hardware planner / model training limit)"
   },
   "memory": {
     "consolidationIntervalMs": 120000,
@@ -83,7 +113,7 @@
   },
   "persona": {
     "enabled": true,
-    "_note": "Character profile management \u2014 auto-detects OpenClaw SOUL.md, or use file/inline for other setups.",
+    "_note": "Character profile management — auto-detects OpenClaw SOUL.md, or use file/inline for other setups.",
     "source": {
       "type": "auto",
       "_typeNote": "auto | openclaw | file | inline. 'auto' tries openclaw paths, then file, then inline.",
