@@ -9,7 +9,6 @@ const client = require('./lib/client.js');
 const { buildConfig } = require('./lib/char-config.js');
 const { suggestPort } = require('./lib/ports.js');
 const Registry = require('./lib/registry.js');
-const log = require('./lib/logger.js').make('wizard');
 
 const REGISTRY_PATH = path.join(os.homedir(), '.anamnesis', 'registry.json');
 const NAME_RE = /^[a-z0-9_-]+$/i;
@@ -182,6 +181,8 @@ async function run(args) {
 }
 
 async function edit(name) {
+  const registry = new Registry(REGISTRY_PATH);
+  const entry = registry.get(name);
   const configPath = path.join(os.homedir(), '.anamnesis', 'characters', name, 'config.json');
   if (!fs.existsSync(configPath)) {
     console.error(`character '${name}' not found`);

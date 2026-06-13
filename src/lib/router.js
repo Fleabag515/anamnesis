@@ -31,6 +31,9 @@ class Router {
   delete(path, handler) {
     this._add('DELETE', path, handler);
   }
+  patch(path, handler) {
+    this._add('PATCH', path, handler);
+  }
 
   async handle(req, res) {
     const url = new URL(req.url, 'http://localhost');
@@ -42,7 +45,7 @@ class Router {
       req.query = Object.fromEntries(url.searchParams);
       try {
         await route.handler(req, res);
-      } catch (e) {
+      } catch {
         if (!res.headersSent) {
           res.writeHead(500, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ error: 'internal server error' }));

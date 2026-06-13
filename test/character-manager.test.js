@@ -110,3 +110,26 @@ test('stopCharacter sets active=false in registry', async () => {
   assert.equal(mgr.isActive('mark'), false);
   assert.equal(reg.get('mark').active, false);
 });
+
+test('updateConfig deep-merges a partial patch and preserves siblings', () => {
+  const { dir, reg, mgr } = tmpSetup();
+  mgr.createCharacter('alice', minimalCharConfig(19950));
+  const merged = mgr.updateConfig('alice', { upstream: { baseUrl: 'http://x/v1' } });
+  assert.equal(merged.upstream.baseUrl, 'http://x/v1');
+  assert.equal(merged.upstream.apiKey, 'test'); // sibling preserved
+  assert.equal(merged.proxy.port, 19950); // untouched section preserved
+  const onDisk = JSON.parse(
+    fs.readFileSync(path.join(dir, 'characters', 'alice', 'config.json'), 'utf8'),
+  );
+  assert.equal(onDisk.upstream.baseUrl, 'http://x/v1');
+  assert.equal(reg.get('alice') !== null, true);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('updateConfig syncs the registry port when proxy.port changes', () => {
+  const { dir, reg, mgr } = tmpSetup();
+  mgr.createCharacter('bob', minimalCharConfig(19960));
+  mgr.updateConfig('bob', { proxy: { port: 19961 } });
+  assert.equal(reg.get('bob').port, 19961);
+  fs.rmSync(dir, { recursive: true, force: true });
+});

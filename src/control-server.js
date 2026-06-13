@@ -61,6 +61,20 @@ function createControlServer(manager, daemonStartedAt) {
     }
   });
 
+  // PATCH /characters/:name — update config (persist; caller restarts to apply)
+  router.patch('/characters/:name', async (req, res) => {
+    const { name } = req.params;
+    if (!manager.getCharacter(name))
+      return json(res, 404, { error: `character '${name}' not found` });
+    const body = await readBody(req);
+    try {
+      const config = manager.updateConfig(name, body.config || body);
+      json(res, 200, { name, config });
+    } catch (e) {
+      json(res, 400, { error: e.message });
+    }
+  });
+
   // POST /characters/:name/start
   router.post('/characters/:name/start', async (req, res) => {
     const { name } = req.params;

@@ -14,6 +14,20 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
  — Unreleased
 
+### Added
+- **Control API: `PATCH /characters/:name`** — update a character's config (deep-merged)
+  at runtime via the daemon instead of editing `config.json` on disk. Backed by a new
+  `CharacterManager.updateConfig(name, patch)` (persists + syncs the registry port; the
+  caller restarts the proxy to apply). Fills the gap clients previously worked around.
+
+### Fixed
+- **`anamnesis edit <name>` crash**: `edit()` referenced an undefined `entry` when
+  restarting an active character (ReferenceError). It now looks the character up first.
+- **Log spam**: per-request outgoing-message dump moved from `info` to `debug`
+  (kept `daemon.log` growing ~1 MB/session at the default level).
+- Lint cleanup (unused vars, prefer-const).
+
+
 ### Fixed
 
 - **Thinking-token contamination** (`stripThinkingTokens`): assistant responses

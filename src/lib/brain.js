@@ -23,7 +23,7 @@ let _engine = null;
 let _embedder = null;
 let _ready = false;
 let _initCalled = false;
-let _queue = []; // { messages, opts, resolve, reject }[]
+const _queue = []; // { messages, opts, resolve, reject }[]
 
 // ─── Test dependency injection ────────────────────────────────────────────────
 

@@ -11,6 +11,21 @@ const log = require('./lib/logger.js').make('manager');
 const NAME_RE = /^[a-z0-9_-]+$/i;
 const DEFAULT_BASE = path.join(os.homedir(), '.anamnesis');
 
+function deepMerge(target, src) {
+  for (const k of Object.keys(src || {})) {
+    const v = src[k];
+    if (
+      v && typeof v === 'object' && !Array.isArray(v) &&
+      target[k] && typeof target[k] === 'object' && !Array.isArray(target[k])
+    ) {
+      deepMerge(target[k], v);
+    } else {
+      target[k] = v;
+    }
+  }
+  return target;
+}
+
 class CharacterManager {
   constructor(registry, baseDir = DEFAULT_BASE, controlPort = 9000) {
     this._registry = registry;
@@ -99,6 +114,21 @@ class CharacterManager {
     const entry = this._registry.get(name);
     if (!entry) return null;
     return { ...entry, running: this._running.has(name) };
+  }
+
+  // Deep-merge a partial config patch and persist it. Does NOT restart a
+  // running proxy — the caller restarts to apply (matches CLI edit + the
+  // Pleiades client). Returns the merged config.
+  updateConfig(name, patch) {
+    if (!this._registry.get(name)) throw new Error(`character '${name}' not found`);
+    const config = this._loadConfig(name);
+    deepMerge(config, patch || {});
+    this._saveConfig(name, config);
+    if (config.proxy && typeof config.proxy.port === 'number') {
+      this._registry.updatePort(name, config.proxy.port);
+    }
+    log.info(`updated config for '${name}'`);
+    return config;
   }
 
   isActive(name) {

@@ -265,7 +265,7 @@ async function start(config = loadConfig()) {
           const clientBudget = rewritten.max_tokens ?? 600;
           rewritten.max_tokens = clientBudget + THINKING_OVERHEAD;
         }
-        log.info('MSGS OUT: ' + JSON.stringify(selectedMessages.map(m => m.role + ':' + (m.content ?? '').slice(0,80))));
+        log.debug('MSGS OUT: ' + JSON.stringify(selectedMessages.map(m => m.role + ':' + (m.content ?? '').slice(0,80))));
         const rewrittenBody = Buffer.from(JSON.stringify(rewritten));
         const headers = buildUpstreamHeaders(req.headers, {
           upstreamApiKey: config.upstream.apiKey,
