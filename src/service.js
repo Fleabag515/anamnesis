@@ -12,6 +12,8 @@ const IS_WINDOWS = process.platform === 'win32';
 async function install() {
   if (IS_WINDOWS) {
     await installWindows();
+  } else if (process.platform === 'darwin') {
+    installMacOS();
   } else {
     installLinux();
   }
@@ -98,9 +100,66 @@ async function installWindows() {
   }
 }
 
+const MACOS_LABEL = 'com.anamnesis.daemon';
+const MACOS_PLIST = `/Library/LaunchDaemons/${MACOS_LABEL}.plist`;
+
+function installMacOS() {
+  if (process.getuid && process.getuid() !== 0) {
+    console.error('error: anamnesis install requires root — run with sudo');
+    process.exit(1);
+  }
+  const logPath = path.join(os.homedir(), '.anamnesis', 'daemon.log');
+  const plist = `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>${MACOS_LABEL}</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>${NODE_BIN}</string>
+    <string>${DAEMON_JS}</string>
+  </array>
+  <key>UserName</key><string>${os.userInfo().username}</string>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>StandardOutPath</key><string>${logPath}</string>
+  <key>StandardErrorPath</key><string>${logPath}</string>
+  <key>EnvironmentVariables</key>
+  <dict><key>ANAMNESIS_LOG</key><string>info</string></dict>
+</dict>
+</plist>
+`;
+  fs.writeFileSync(MACOS_PLIST, plist, 'utf8');
+  try { execSync(`launchctl bootout system/${MACOS_LABEL}`, { stdio: 'pipe' }); } catch { /* not loaded */ }
+  try {
+    execSync(`launchctl bootstrap system ${MACOS_PLIST}`);
+  } catch {
+    // Pre-Big-Sur macOS: bootstrap may be unavailable; legacy load -w still works.
+    execSync(`launchctl load -w ${MACOS_PLIST}`);
+  }
+  console.log('✓ anamnesis service installed and started');
+  console.log(`  check status: launchctl print system/${MACOS_LABEL}`);
+}
+
+function uninstallMacOS() {
+  try {
+    execSync(`launchctl bootout system/${MACOS_LABEL}`, { stdio: 'pipe' });
+  } catch {
+    try { execSync(`launchctl unload ${MACOS_PLIST}`, { stdio: 'pipe' }); } catch { /* not loaded */ }
+  }
+  try {
+    fs.unlinkSync(MACOS_PLIST);
+  } catch {
+    /* already gone */
+  }
+  console.log('✓ anamnesis service uninstalled (data preserved in ~/.anamnesis/)');
+}
+
 async function uninstall() {
   if (IS_WINDOWS) {
     await uninstallWindows();
+  } else if (process.platform === 'darwin') {
+    uninstallMacOS();
   } else {
     uninstallLinux();
   }

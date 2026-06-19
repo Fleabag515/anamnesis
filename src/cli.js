@@ -394,6 +394,10 @@ const commands = {
       try { require('child_process').execSync('schtasks /Query /TN "Anamnesis Daemon"', { stdio: 'pipe' });
         ok('registered as Task Scheduler logon task'); }
       catch { warn('not a startup task — run: anamnesis install'); }
+    } else if (process.platform === 'darwin') {
+      try { require('child_process').execSync('launchctl print system/com.anamnesis.daemon', { stdio: 'pipe' });
+        ok('registered as launchd service'); }
+      catch { warn('not a launchd service — run: sudo anamnesis install'); }
     } else {
       try { require('child_process').execSync('systemctl is-enabled anamnesis', { stdio: 'pipe' });
         ok('systemd service enabled'); }
