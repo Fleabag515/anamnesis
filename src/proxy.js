@@ -93,7 +93,7 @@ async function start(config = loadConfig()) {
    * Pipe upstream response straight to the client, AND tee each chunk into
    * `onChunk` so callers can rebuild assistant content for storage.
    */
-  function streamThrough(reqPath, method, headers, body, clientRes, onChunk) {
+  function streamThrough(reqPath, method, headers, body, clientRes, onChunk, watchRes) {
     return new Promise((resolve, reject) => {
       const { upUrl, lib, port, path: outPath } = upstreamUrl(reqPath);
       const upReq = lib.request(
@@ -114,16 +114,39 @@ async function start(config = loadConfig()) {
             }
           });
           upRes.on('end', () => {
+            detachAbort();
             clientRes.end();
             resolve();
           });
           upRes.on('error', (err) => {
+            detachAbort();
             clientRes.end();
             reject(err);
           });
         }
       );
+      // Stop button / dropped client: the webui closes its connection to us
+      // (engine.py calls stream.close() on the SDK stream), but without this,
+      // that close was never observed here — the upstream llama-server request
+      // kept decoding to completion regardless, wasting the model's single
+      // (--parallel 1) concurrency slot and blocking every other request.
+      // Destroying upReq on the real incoming request's 'close' propagates the
+      // cancellation all the way to llama-server, which aborts the in-flight
+      // generation when its socket drops.
+      function onClientAbort() {
+        log.warn('client disconnected mid-stream — aborting upstream generation');
+        upReq.destroy(new Error('client disconnected'));
+      }
+      function detachAbort() {
+        if (watchRes) watchRes.removeListener('close', onClientAbort);
+      }
+      // Must watch the RAW response object, not a thinking-filter wrapper —
+      // Object.create(res) wrappers don't share res's EventEmitter state, so
+      // 'close' (the documented signal for a connection torn down before
+      // response.end()) would never reach a listener added to the wrapper.
+      if (watchRes) watchRes.once('close', onClientAbort);
       upReq.on('error', (err) => {
+        detachAbort();
         if (!clientRes.headersSent) {
           clientRes.writeHead(502, { 'Content-Type': 'application/json' });
           clientRes.end(JSON.stringify({ error: err.message }));
@@ -255,13 +278,22 @@ async function start(config = loadConfig()) {
         if (config.upstream.disableThinking) {
           // Thinking management strategy:
           // - Do NOT strip tools/tool_choice — Mark needs full tool access to act autonomously.
-          // - Let the server's built-in reasoning extractor handle thinking tokens:
-          //   thinking goes into `reasoning_content` (ephemeral, never stored in DB),
-          //   leaving `content` clean. Thinking is free and doesn't pollute future context.
-          // - Boost max_tokens so thinking budget + actual response both fit within the
-          //   completion window. completion_tokens counts BOTH thinking + content tokens.
-          //   THINKING_OVERHEAD gives the model room for deep reasoning chains.
-          const THINKING_OVERHEAD = 4000; // model self-terminates well before this
+          // - Actually tell the chat template to skip thinking: `chat_template_kwargs.
+          //   enable_thinking: false` is honored by llama-server's --jinja rendering on
+          //   Qwen3-family templates (verified live: with it, the model answers directly,
+          //   ~0.5s, finish_reason "stop"; without it, reasoning-budget defaults to
+          //   unrestricted server-side and the model can burn the entire completion
+          //   window on invisible `reasoning_content` with finish_reason "length" and
+          //   EMPTY `content` — i.e. disableThinking previously didn't disable thinking
+          //   at all, just hoped the model would stop on its own before a padded
+          //   max_tokens ran out, which is false for at least one real model).
+          // - Still pad max_tokens a bit as a fallback for templates that don't honor
+          //   enable_thinking — better a little unused headroom than a truncated answer.
+          rewritten.chat_template_kwargs = {
+            ...(rewritten.chat_template_kwargs || {}),
+            enable_thinking: false,
+          };
+          const THINKING_OVERHEAD = 500; // safety margin only; true suppression is above
           const clientBudget = rewritten.max_tokens ?? 600;
           rewritten.max_tokens = clientBudget + THINKING_OVERHEAD;
         }
@@ -281,7 +313,7 @@ async function start(config = loadConfig()) {
           try {
             await streamThrough(req.url, req.method, headers, rewrittenBody, filteredRes, (c) =>
               sse.feed(c)
-            );
+            , res);
           } catch (err) {
             log.error('streaming upstream error:', err.message);
             return;
