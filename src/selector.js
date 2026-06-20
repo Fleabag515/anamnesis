@@ -55,8 +55,24 @@ class Selector {
     const currentModel = this.embedder.model;
 
     // Recency buffer — always included verbatim.
+    //
+    // convoMsgs is the *incoming request's* non-system messages, not a log of
+    // distinct conversational turns -- for an agentic tool-calling client
+    // (e.g. Pleiades) a single user turn can itself expand into many
+    // (assistant tool_call, tool result) round-trips, all resent in the one
+    // growing array for that turn. A blind count-based slice can therefore
+    // cut deeper than the turn's own anchoring user message and drop it
+    // entirely, leaving an upstream request with zero user-role messages.
+    // Some chat templates assume at least one is always present (e.g. Qwen3's
+    // multi_step_tool branch raises "No user query found in messages."
+    // otherwise), so never slice past the most recent user message, even if
+    // that means the window holds more than recencyTurns*2 messages for one
+    // oversized turn.
     const recencyWindow = recencyTurns * 2;
-    const recencyMsgs = convoMsgs.slice(Math.max(0, convoMsgs.length - recencyWindow));
+    let recencyCut = Math.max(0, convoMsgs.length - recencyWindow);
+    const lastUserIdx = convoMsgs.reduce((acc, m, i) => (m.role === 'user' ? i : acc), -1);
+    if (lastUserIdx !== -1 && lastUserIdx < recencyCut) recencyCut = lastUserIdx;
+    const recencyMsgs = convoMsgs.slice(recencyCut);
 
     const scenes = this.history.getScenes(sessionKey);
 
