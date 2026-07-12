@@ -29,7 +29,13 @@ class InferenceEngine {
     _platform = null,
     gpuLayerBudgetMB = 512,
     modelPath = null,
+    threads = 4,
   } = {}) {
+    // threads: keep the helper brain SMALL. It shares the machine with the
+    // primary inference server, whose MoE decode is CPU-bandwidth-bound —
+    // letting node-llama-cpp default to every core starves the main model
+    // (observed: load avg 25/16, Ornith decode 15 → 1-2 tok/s).
+    this.threads = Math.max(1, threads);
     this._skipLoad = _skipLoad;
     this._llamaFactory = _llamaFactory;
     this._platform = _platform;
@@ -79,7 +85,10 @@ class InferenceEngine {
       // Windows-style backslash paths even when Node.js itself handles them fine.
       const normalizedPath = modelPath.replace(/\\/g, '/');
       this._model = await this._llama.loadModel({ modelPath: normalizedPath, gpuLayers });
-      this._ctx = await this._model.createContext({ contextSize: CONTEXT_SIZE });
+      this._ctx = await this._model.createContext({
+        contextSize: CONTEXT_SIZE,
+        threads: this.threads,
+      });
       this._loaded = true;
       log.info(`model loaded: ${modelPath} (gpuLayers=${gpuLayers})`);
     } catch (err) {

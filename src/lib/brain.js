@@ -68,10 +68,11 @@ function init(config) {
   _initCalled = true;
 
   const gpuLayerBudgetMB = config?.inference?.gpuLayerBudgetMB ?? 512;
+  const threads = config?.inference?.threads ?? 4;
 
   const engineWasInjected = !!_engine; // true in tests via _inject()
   if (!_engine) {
-    _engine = new InferenceEngine({ gpuLayerBudgetMB });
+    _engine = new InferenceEngine({ gpuLayerBudgetMB, threads });
   }
   if (!_embedder) {
     _embedder = new LocalEmbedder();
