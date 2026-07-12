@@ -20,6 +20,7 @@
  */
 
 const brain = require('./lib/brain.js');
+const HistoryStore = require('./history.js');
 const { FORESIGHT } = require('./lib/prompts.js');
 const { shouldProcessTurn } = require('./lib/heuristics.js');
 const log = require('./lib/logger.js').make('foresight');
@@ -27,9 +28,10 @@ const log = require('./lib/logger.js').make('foresight');
 const VALID_TIMEFRAMES = ['soon', 'days', 'weeks', 'months', 'ongoing'];
 
 class ForesightExtractor {
-  constructor(config, historyStore) {
+  constructor(config, historyStore, embedder = null) {
     this.cfg = config.foresight;
     this.history = historyStore;
+    this.embedder = embedder; // optional: enables relevance vectors + auto-fulfill
     this._running = false;
     this._inflight = null;
   }
@@ -69,6 +71,12 @@ class ForesightExtractor {
       this.history.markForesightScanned(turn.id);
       return;
     }
+    // Auto-fulfillment: if this turn is highly similar to an *older* active
+    // foresight, the model has circled back to that plan — retire it so it
+    // stops being re-injected forever. (Same-day repeats are just the plan
+    // being restated, so require ≥1 day of age.) markForesightFulfilled did
+    // not have a single caller before this: foresights were immortal.
+    this._autoFulfill(turn).catch(() => {});
 
     let items = null;
     for (let attempt = 0; attempt <= this.cfg.maxRetries; attempt++) {
@@ -97,13 +105,18 @@ class ForesightExtractor {
         typeof item?.confidence === 'number' ? Math.min(1, Math.max(0, item.confidence)) : 0.7;
       if (confidence < 0.4) continue;
 
+      const vec = this.embedder
+        ? await this.embedder.embed(intention).catch(() => null)
+        : null;
       this.history.insertForesight(
         turn.session_key,
         turn.id,
         intention,
         target,
         timeframe,
-        confidence
+        confidence,
+        vec,
+        vec ? this.embedder.model : null
       );
       count++;
     }
@@ -111,6 +124,27 @@ class ForesightExtractor {
     this.history.markForesightScanned(turn.id);
     if (count > 0)
       log.info(`turn ${turn.id} → ${count} foresight(s) (session=${turn.session_key.slice(0, 8)})`);
+  }
+
+  async _autoFulfill(turn) {
+    if (!this.embedder || !turn.embedding) return;
+    if (turn.embedding_model && turn.embedding_model !== this.embedder.model) return;
+    const tVec = HistoryStore.toFloat32(turn.embedding);
+    if (!tVec) return;
+    const cosine = this.embedder.constructor.cosine;
+    const minAgeSec = this.cfg.fulfillMinAgeSec ?? 86400;
+    const fulfillSim = this.cfg.fulfillSim ?? 0.72;
+    const now = Math.floor(Date.now() / 1000);
+    for (const f of this.history.getActiveForesights(turn.session_key, 50)) {
+      if (!f.embedding) continue;
+      if (f.embedding_model && f.embedding_model !== this.embedder.model) continue;
+      if (now - f.created_at < minAgeSec) continue;
+      const fVec = HistoryStore.toFloat32(f.embedding);
+      if (fVec && cosine(tVec, fVec) >= fulfillSim) {
+        this.history.markForesightFulfilled(f.id);
+        log.info(`foresight ${f.id} auto-fulfilled ("${f.intention.slice(0, 50)}...")`);
+      }
+    }
   }
 
   async _callLLM(content) {

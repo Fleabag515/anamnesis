@@ -6,12 +6,28 @@
  * Stage 1 — System-message injection:
  *   Find top relevant Episodes, build a compact <memory> block, append it
  *   to the last system message. The model is explicitly *told* what it
- *   already knows. Only scenes above INJECTION_MIN_SIM are included, which
+ *   already knows. Only scenes above injectionMinSim are included, which
  *   prevents the "skiptracer" problem (irrelevant past context leaking in).
  *
  * Stage 2 — Rotating turn slots:
  *   Fill remaining token budget with turns from relevant scenes. Falls back
  *   to raw turn similarity if no scenes exist yet.
+ *
+ * Topic anchoring (drift fix):
+ *   The retrieval query is NOT just the latest user message. Short or
+ *   deictic messages ("yes", "do that", "what about the other one") embed
+ *   to near-noise, and ranking every memory against noise is exactly how
+ *   off-topic memories get injected and the conversation drifts. The query
+ *   vector is a blend of the current message and a *topic anchor* — the
+ *   normalized mean of the last few stored turn embeddings for this
+ *   session. The shorter the current message, the harder the query leans
+ *   on the anchor. See _buildQueryVec().
+ *
+ * Relevance floors (hallucination fix):
+ *   Every retrieval path has a minimum-similarity floor. When nothing
+ *   clears the floor, NOTHING is injected — an empty memory block is
+ *   strictly better than a wrong one, because the model treats whatever we
+ *   inject as ground truth.
  *
  * Final context shape:
  *   [system + <memory> block] + [rotating relevant turns] + [last N turns verbatim]
@@ -22,10 +38,76 @@ const Embedder = require('./embedder.js');
 const { extractContentText, stripThinkingTokens } = require('./lib/proxy-helpers.js');
 const log = require('./lib/logger.js').make('selector');
 
-// How many scenes to summarise in the injection block.
-const INJECTION_SCENES = 3;
-// Minimum scene similarity to include in injection.
-const INJECTION_MIN_SIM = 0.45;
+// Defaults — every one of these is overridable via config.context.*
+const INJECTION_SCENES = 3; // scenes summarised in the injection block
+const INJECTION_MIN_SIM = 0.45; // min scene similarity to inject
+const SLOT_MIN_SIM = 0.32; // min raw similarity for rotating-slot candidates
+const ANCHOR_TURNS = 6; // recent turns blended into the topic anchor
+const ANCHOR_WEIGHT = 0.35; // anchor share of the query vector (long queries)
+const ANCHOR_WEIGHT_SHORT = 0.65; // anchor share for short/deictic queries
+const SHORT_QUERY_CHARS = 40; // "short query" threshold
+const FORESIGHT_MIN_SIM = 0.22; // min relevance for a foresight to inject
+const FORESIGHT_MAX = 3; // max foresights injected
+// Days before an unfulfilled foresight stops being injected, per timeframe.
+// Single source of truth lives on HistoryStore (the consolidator's expiry
+// pass uses the same map).
+const FORESIGHT_TTL_DAYS = HistoryStore.FORESIGHT_TTL_DAYS ?? {
+  soon: 3,
+  days: 7,
+  weeks: 30,
+  months: 90,
+  ongoing: 45,
+};
+
+// ─── small vector helpers ────────────────────────────────────────────────────
+function meanVec(vecs) {
+  const usable = vecs.filter((v) => v && v.length);
+  if (!usable.length) return null;
+  const dim = usable[0].length;
+  const out = new Float32Array(dim);
+  let n = 0;
+  for (const v of usable) {
+    if (v.length !== dim) continue;
+    for (let i = 0; i < dim; i++) out[i] += v[i];
+    n++;
+  }
+  if (!n) return null;
+  for (let i = 0; i < dim; i++) out[i] /= n;
+  return normalize(out);
+}
+
+function normalize(v) {
+  if (!v) return null;
+  let norm = 0;
+  for (let i = 0; i < v.length; i++) norm += v[i] * v[i];
+  norm = Math.sqrt(norm);
+  if (norm === 0) return v;
+  const out = new Float32Array(v.length);
+  for (let i = 0; i < v.length; i++) out[i] = v[i] / norm;
+  return out;
+}
+
+function blend(a, b, wb) {
+  // (1-wb)*a + wb*b, normalized. a and b must be same-dim.
+  if (!a) return b ? normalize(b) : null;
+  if (!b || b.length !== a.length) return normalize(a);
+  const out = new Float32Array(a.length);
+  for (let i = 0; i < a.length; i++) out[i] = (1 - wb) * a[i] + wb * b[i];
+  return normalize(out);
+}
+
+function fmtDate(unixSec) {
+  if (!unixSec) return '';
+  try {
+    return new Date(unixSec * 1000).toISOString().slice(0, 10);
+  } catch {
+    return '';
+  }
+}
+
+function ageDays(unixSec) {
+  return (Date.now() / 1000 - (unixSec ?? 0)) / 86400;
+}
 
 class Selector {
   constructor(config, historyStore, embedder, persona = null) {
@@ -35,15 +117,29 @@ class Selector {
     this.persona = persona; // PersonaManager instance or null
   }
 
-  async select(sessionKey, incoming) {
-    const {
-      tokenBudget,
-      systemReserveTokens,
-      recencyTurns,
-      rotatingSlots,
-      charsPerToken,
-      minChunkChars,
-    } = this.cfg;
+  // Tunable with config.context override, falling back to module default.
+  _t(key, fallback) {
+    const v = this.cfg?.[key];
+    return typeof v === 'number' ? v : fallback;
+  }
+
+  /**
+   * @param {string} sessionKey
+   * @param {Array} incoming — the request's messages array
+   * @param {object} [opts]
+   * @param {number} [opts.budgetCeiling] — effective token ceiling discovered
+   *   from the upstream server's real context window (see proxy.js). The
+   *   configured tokenBudget is clamped to this so we never build a context
+   *   the upstream will silently truncate — front-truncation eats the system
+   *   prompt + memory block first, which reads as amnesia + hallucination.
+   */
+  async select(sessionKey, incoming, opts = {}) {
+    const { systemReserveTokens, recencyTurns, rotatingSlots, charsPerToken, minChunkChars } =
+      this.cfg;
+    let tokenBudget = this.cfg.tokenBudget;
+    if (typeof opts.budgetCeiling === 'number' && opts.budgetCeiling > 0) {
+      tokenBudget = Math.min(tokenBudget, opts.budgetCeiling);
+    }
 
     const systemMsgs = incoming.filter((m) => m.role === 'system');
     const convoMsgs = incoming.filter((m) => m.role !== 'system');
@@ -51,8 +147,9 @@ class Selector {
     // Normalise possibly-array content (OpenAI multipart) into plain text
     // so the embedding sees the same string that gets stored as the turn.
     const queryText = extractContentText(currentMsg?.content);
-    const queryVec = queryText ? await this.embedder.embed(queryText) : null;
     const currentModel = this.embedder.model;
+    const rawVec = queryText ? await this.embedder.embed(queryText) : null;
+    const queryVec = await this._buildQueryVec(sessionKey, queryText, currentModel, rawVec);
 
     // Recency buffer — always included verbatim.
     //
@@ -77,13 +174,14 @@ class Selector {
     const scenes = this.history.getScenes(sessionKey);
 
     // ─── Stage 1: build memory + foresight injection block ──────────────────
-    const foresights = this.history.getActiveForesights(sessionKey, 3);
+    const foresights = this._relevantForesights(sessionKey, queryVec, currentModel, rawVec);
     const enrichedSystem = this._buildSystemWithMemory(
       systemMsgs,
       scenes,
       queryVec,
       currentModel,
-      foresights
+      foresights,
+      rawVec
     );
 
     // ─── Budget accounting ─────────────────────────────────────────────────
@@ -93,28 +191,31 @@ class Selector {
 
     // ─── Stage 2: rotating turn slots ──────────────────────────────────────
     let rotatingMsgs = [];
-    if (scenes.length > 0 && queryVec) {
-      rotatingMsgs = this._sceneGuidedRetrieval(
-        sessionKey,
-        queryVec,
-        currentModel,
-        scenes,
-        rotatingSlots,
-        budget,
-        charsPerToken,
-        minChunkChars
-      );
-    } else {
-      rotatingMsgs = this._rawTurnRetrieval(
-        sessionKey,
-        queryVec,
-        currentModel,
-        recencyMsgs.length,
-        rotatingSlots,
-        budget,
-        charsPerToken,
-        minChunkChars
-      );
+    if (budget > 0 && queryVec) {
+      if (scenes.length > 0) {
+        rotatingMsgs = this._sceneGuidedRetrieval(
+          sessionKey,
+          queryVec,
+          currentModel,
+          scenes,
+          rotatingSlots,
+          budget,
+          charsPerToken,
+          minChunkChars,
+          rawVec
+        );
+      } else {
+        rotatingMsgs = this._rawTurnRetrieval(
+          sessionKey,
+          queryVec,
+          currentModel,
+          recencyMsgs.length,
+          rotatingSlots,
+          budget,
+          charsPerToken,
+          minChunkChars
+        );
+      }
     }
 
     const final = [...enrichedSystem, ...rotatingMsgs, ...recencyMsgs];
@@ -125,16 +226,114 @@ class Selector {
       `session=${sessionKey.slice(0, 8)} ` +
         `turns=${stats.turns} cells=${stats.cells} scenes=${stats.scenes} foresights=${stats.foresights} ` +
         `injected=${enrichedSystem.length > systemMsgs.length ? 'yes' : 'no'} ` +
-        `rotating=${rotatingMsgs.length} recency=${recencyMsgs.length}`
+        `rotating=${rotatingMsgs.length} recency=${recencyMsgs.length} budget=${tokenBudget}`
     );
 
     return final;
   }
 
   /**
+   * Build the retrieval query vector: current message blended with the
+   * session's short-term topic anchor (mean of recent turn embeddings).
+   *
+   * Returns null only when we have neither a usable current message nor any
+   * recent turn vectors — in which case no similarity-based injection
+   * happens at all (recency still flows through untouched).
+   */
+  async _buildQueryVec(sessionKey, queryText, currentModel, precomputedCur = null) {
+    const cur = precomputedCur ?? (queryText ? await this.embedder.embed(queryText) : null);
+
+    let anchor = null;
+    try {
+      const anchorTurns = this._t('anchorTurns', ANCHOR_TURNS);
+      const recent = this.history.getRecentTurnVectors(sessionKey, anchorTurns, currentModel);
+      anchor = meanVec(recent.map((r) => HistoryStore.toFloat32(r.embedding)));
+    } catch (e) {
+      log.debug('anchor build failed:', e.message);
+    }
+
+    if (!cur && !anchor) return null;
+    if (!cur) return anchor;
+    if (!anchor) return normalize(cur);
+
+    const short = (queryText?.length ?? 0) < this._t('shortQueryChars', SHORT_QUERY_CHARS);
+    const w = short
+      ? this._t('anchorWeightShort', ANCHOR_WEIGHT_SHORT)
+      : this._t('anchorWeight', ANCHOR_WEIGHT);
+    return blend(cur, anchor, w);
+  }
+
+  /**
+   * Foresights worth injecting: unfulfilled, not expired for their declared
+   * timeframe, and (when both vectors exist) at least loosely relevant to
+   * the current query. Stale "I was about to X" lines from weeks ago are a
+   * classic drift vector — the model keeps steering back to dead plans.
+   */
+  _relevantForesights(sessionKey, queryVec, currentModel, rawVec = null) {
+    let rows = [];
+    try {
+      rows = this.history.getActiveForesights(sessionKey, 25);
+    } catch {
+      return [];
+    }
+    const minSim = this._t('foresightMinSim', FORESIGHT_MIN_SIM);
+    const out = [];
+    for (const f of rows) {
+      const ttl = FORESIGHT_TTL_DAYS[f.timeframe] ?? 7;
+      if (ageDays(f.created_at) > ttl) continue; // expired — consolidator will retire it
+      if (queryVec && f.embedding && (!f.embedding_model || f.embedding_model === currentModel)) {
+        const fVec = HistoryStore.toFloat32(f.embedding);
+        let sim = null;
+        if (fVec) {
+          const b = Embedder.constructor.cosine(queryVec, fVec);
+          const r = rawVec ? Embedder.constructor.cosine(rawVec, fVec) : 0;
+          sim = Math.max(b, r);
+        }
+        if (sim !== null && sim < minSim) continue;
+        out.push({ ...f, sim: sim ?? 0 });
+      } else if (ageDays(f.created_at) <= 7) {
+        // Legacy row without a comparable vector: relevance can't be
+        // checked, so only surface it while fresh. `anamnesis reembed`
+        // backfills vectors and retires this branch.
+        out.push({ ...f, sim: 0 });
+      }
+    }
+    out.sort((a, b) => b.sim - a.sim || b.created_at - a.created_at);
+    return out.slice(0, this._t('foresightMax', FORESIGHT_MAX));
+  }
+
+  /**
+   * Score a scene against the query. Returns { sim, score }:
+   *   sim   — raw cosine, used against floors;
+   *   score — sim weighted by importance and a mild recency factor, used
+   *           for ranking. Recency matters: two scenes at equal similarity
+   *           should not tie when one is from yesterday and one from three
+   *           months ago.
+   */
+  _sceneScore(scene, queryVec, currentModel, rawVec = null) {
+    if (scene.embedding_model && scene.embedding_model !== currentModel) {
+      return { sim: null, score: 0.2 * (0.7 + (scene.avg_importance ?? 0.5) * 0.3) };
+    }
+    const sVec = HistoryStore.toFloat32(scene.embedding);
+    // Eligibility takes the best of the blended query and the raw current
+    // message: blending rescues short deictic turns ("yeah do that"), but
+    // dilutes long self-contained questions whenever the recent-turn anchor
+    // is about something else. max() keeps both cases honest — noise vectors
+    // very rarely clear the floors on their own.
+    let sim = 0;
+    if (sVec) {
+      const b = queryVec ? Embedder.constructor.cosine(queryVec, sVec) : 0;
+      const r = rawVec ? Embedder.constructor.cosine(rawVec, sVec) : 0;
+      sim = Math.max(b, r);
+    }
+    const recency = 0.85 + 0.15 * Math.exp(-ageDays(scene.updated_at) / 45);
+    return { sim, score: sim * (0.7 + (scene.avg_importance ?? 0.5) * 0.3) * recency };
+  }
+
+  /**
    * Append <memory> and <foresight> blocks to the last system message.
    */
-  _buildSystemWithMemory(systemMsgs, scenes, queryVec, currentModel, foresights = []) {
+  _buildSystemWithMemory(systemMsgs, scenes, queryVec, currentModel, foresights = [], rawVec = null) {
     const hasMemory = scenes.length > 0 && queryVec;
     const hasForesight = foresights.length > 0;
     const _charBlock = this.persona ? this.persona.getCharacterBlock() : '';
@@ -142,7 +341,12 @@ class Selector {
       if (!_charBlock) return systemMsgs;
       // Inject character block even when no memories or foresights are present
       if (systemMsgs.length === 0) return [{ role: 'system', content: _charBlock.trim() }];
-      return [{ role: 'system', content: _charBlock.trim() + '\n\n' + systemMsgs.map(m => m.content).join('\n\n') }];
+      return [
+        {
+          role: 'system',
+          content: _charBlock.trim() + '\n\n' + systemMsgs.map((m) => m.content).join('\n\n'),
+        },
+      ];
     }
 
     // Character block is always prepended (persona handles its own enabled check)
@@ -150,24 +354,28 @@ class Selector {
     let injection = characterBlock;
 
     if (hasMemory) {
+      const injMin = this._t('injectionMinSim', INJECTION_MIN_SIM);
       const relevant = scenes
-        .map((s) => {
-          if (s.embedding_model && s.embedding_model !== currentModel) {
-            // Model mismatch: can't compare vectors — assign a low but non-zero
-            // default so older episodes still surface rather than disappearing.
-            return { ...s, sim: 0.2 };
-          }
-          const sVec = HistoryStore.toFloat32(s.embedding);
-          const sim = sVec ? Embedder.constructor.cosine(queryVec, sVec) : 0;
-          return { ...s, sim };
-        })
-        .filter((s) => s.sim >= INJECTION_MIN_SIM)
-        .sort((a, b) => b.sim - a.sim)
-        .slice(0, INJECTION_SCENES);
+        .map((s) => ({ ...s, ...this._sceneScore(s, queryVec, currentModel, rawVec) }))
+        // sim === null → vector from another embedding model: unverifiable
+        // relevance. Never inject those as "memories" — they go through the
+        // rotating-slot path at reduced priority instead.
+        .filter((s) => s.sim !== null && s.sim >= injMin)
+        .sort((a, b) => b.score - a.score)
+        .slice(0, this._t('injectionScenes', INJECTION_SCENES));
 
       if (relevant.length) {
-        const memLines = relevant.map((s) => `• [${s.title}] ${s.summary}`).join('\n');
-        injection += `\n\n<memory>\nYour memories — things you actually experienced in previous sessions:\n${memLines}\n</memory>`;
+        const memLines = relevant
+          .map((s) => {
+            const d = fmtDate(s.updated_at);
+            return `• ${d ? `[${d}] ` : ''}[${s.title}] ${s.summary}`;
+          })
+          .join('\n');
+        injection +=
+          `\n\n<memory>\nExcerpts from your long-term memory of earlier sessions. ` +
+          `They may be incomplete or summarized — the CURRENT conversation is always ` +
+          `authoritative. If a memory conflicts with what is being said now, trust the ` +
+          `conversation. Never invent details beyond what is written here:\n${memLines}\n</memory>`;
       }
     }
 
@@ -175,10 +383,15 @@ class Selector {
       const fLines = foresights
         .map((f) => {
           const tag = f.target ? ` (${f.target})` : '';
-          return `• [${f.timeframe}]${tag} ${f.intention}`;
+          const age = Math.floor(ageDays(f.created_at));
+          const ageTag = age >= 1 ? ` — noted ${age}d ago` : '';
+          return `• [${f.timeframe}]${tag} ${f.intention}${ageTag}`;
         })
         .join('\n');
-      injection += `\n\n<foresight>\nYour own intentions — things you were thinking about doing:\n${fLines}\n</foresight>`;
+      injection +=
+        `\n\n<foresight>\nIntentions you noted in earlier sessions. Only act on one if it is ` +
+        `relevant to what is being discussed NOW — do not steer the conversation back to ` +
+        `these on your own:\n${fLines}\n</foresight>`;
     }
 
     if (!injection) return systemMsgs;
@@ -188,7 +401,10 @@ class Selector {
     }
     // Prepend so character persona takes priority over any client system prompt
     const enriched = [
-      { role: 'system', content: injection.trim() + '\n\n' + systemMsgs.map(m => m.content).join('\n\n') },
+      {
+        role: 'system',
+        content: injection.trim() + '\n\n' + systemMsgs.map((m) => m.content).join('\n\n'),
+      },
     ];
     return enriched;
   }
@@ -201,19 +417,27 @@ class Selector {
     maxSlots,
     budget,
     cpt,
-    minChars
+    minChars,
+    rawVec = null
   ) {
-    const scored = scenes
-      .map((s) => {
-        if (s.embedding_model && s.embedding_model !== currentModel) {
-          return { ...s, weightedSim: 0.2 * (0.7 + s.avg_importance * 0.3) };
-        }
-        const sVec = HistoryStore.toFloat32(s.embedding);
-        const sim = sVec ? Embedder.constructor.cosine(queryVec, sVec) : 0;
-        return { ...s, weightedSim: sim * (0.7 + s.avg_importance * 0.3) };
-      })
-      .sort((a, b) => b.weightedSim - a.weightedSim)
-      .slice(0, maxSlots * 2);
+    const slotMin = this._t('slotMinSim', SLOT_MIN_SIM);
+    const scoredAll = scenes.map((s) => ({
+      ...s,
+      ...this._sceneScore(s, queryVec, currentModel, rawVec),
+    }));
+
+    // Same-model scenes must clear the relevance floor. Unverifiable
+    // (model-mismatch) scenes are only a COLD-START fallback: right after an
+    // embedding-model swap nearly nothing is comparable, and unverifiable
+    // beats total amnesia. But when the store has plenty of comparable
+    // scenes and none are relevant, inject nothing — that's the floor doing
+    // its job (`anamnesis reembed` is the real fix for a mixed store).
+    let qualified = scoredAll.filter((s) => s.sim !== null && s.sim >= slotMin);
+    const comparable = scoredAll.filter((s) => s.sim !== null).length;
+    if (qualified.length < 2 && comparable < 3) {
+      qualified = qualified.concat(scoredAll.filter((s) => s.sim === null));
+    }
+    const scored = qualified.sort((a, b) => b.score - a.score).slice(0, maxSlots * 2);
 
     const turnIdSet = new Set();
     for (const scene of scored) {
@@ -238,13 +462,17 @@ class Selector {
       .map((t) => {
         const full = turnMap.get(t.id);
         if (full?.embedding_model && full.embedding_model !== currentModel) {
-          return { ...t, score: (full?.importance ?? 0.5) * 0.5 };
+          return { ...t, sim: null, score: (full?.importance ?? 0.5) * 0.5 };
         }
         const tVec = full?.embedding ? HistoryStore.toFloat32(full.embedding) : null;
-        const sim = tVec ? Embedder.constructor.cosine(queryVec, tVec) : 0.3;
+        const sim = tVec ? Embedder.constructor.cosine(queryVec, tVec) : null;
         const imp = full?.importance ?? 0.5;
-        return { ...t, score: sim * 0.7 + imp * 0.3 };
+        return { ...t, sim, score: (sim ?? 0.3) * 0.7 + imp * 0.3 };
       })
+      // Floor: a turn with a comparable vector must be at least loosely
+      // on-topic. Turns without vectors (sim === null) are allowed through
+      // on importance alone — they were selected via a qualified scene.
+      .filter((t) => t.sim === null || t.sim >= slotMin)
       .sort((a, b) => b.score - a.score);
 
     return this._fillBudget(ranked, maxSlots, budget, cpt, minChars);
@@ -260,6 +488,7 @@ class Selector {
     cpt,
     minChars
   ) {
+    const slotMin = this._t('slotMinSim', SLOT_MIN_SIM);
     const allTurns = this.history.getSessionTurns(sessionKey);
     const candidates = allTurns.slice(0, Math.max(0, allTurns.length - recencyCount));
 
@@ -273,6 +502,7 @@ class Selector {
         const sim = tVec && queryVec ? Embedder.constructor.cosine(queryVec, tVec) : 0;
         return { ...t, score: sim };
       })
+      .filter((t) => t.score >= slotMin)
       .sort((a, b) => b.score - a.score);
 
     return this._fillBudget(scored, maxSlots, budget, cpt, minChars);
@@ -310,3 +540,4 @@ class Selector {
 }
 
 module.exports = Selector;
+module.exports._internals = { meanVec, normalize, blend, FORESIGHT_TTL_DAYS };

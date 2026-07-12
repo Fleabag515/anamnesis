@@ -19,9 +19,27 @@
  */
 
 const brain = require('./lib/brain.js');
-const { ENGRAM_EXTRACTION } = require('./lib/prompts.js');
+const HistoryStore = require('./history.js');
+const { ENGRAM_EXTRACTION, ENGRAM_EXTRACTION_USER } = require('./lib/prompts.js');
 const { shouldProcessTurn } = require('./lib/heuristics.js');
 const log = require('./lib/logger.js').make('extractor');
+
+// Local cosine — deliberately not this.embedder.constructor.cosine, so the
+// grounding check also works with duck-typed embedders (tests, future
+// backends) that only implement embed()/model.
+function cosine(a, b) {
+  if (!a || !b || a.length !== b.length) return 0;
+  let dot = 0,
+    na = 0,
+    nb = 0;
+  for (let i = 0; i < a.length; i++) {
+    dot += a[i] * b[i];
+    na += a[i] * a[i];
+    nb += b[i] * b[i];
+  }
+  const denom = Math.sqrt(na) * Math.sqrt(nb);
+  return denom === 0 ? 0 : dot / denom;
+}
 
 const CATEGORIES = ['technical', 'decision', 'preference', 'personal', 'context', 'other'];
 
@@ -35,7 +53,10 @@ class Extractor {
   }
 
   async processBacklog() {
-    const pending = this.history.getUnextractedAssistantTurns(this.cfg.startupBacklogLimit);
+    const pending = this.history.getUnextractedTurns(
+      this.cfg.startupBacklogLimit,
+      this.cfg.includeUserTurns ?? true
+    );
     if (!pending.length) return;
     log.info(`processing ${pending.length} unextracted turn(s) from backlog`);
     for (const turn of pending) await this._extractTurn(turn);
@@ -60,7 +81,7 @@ class Extractor {
   }
 
   async _runBatch() {
-    const turns = this.history.getUnextractedAssistantTurns(5);
+    const turns = this.history.getUnextractedTurns(5, this.cfg.includeUserTurns ?? true);
     for (const turn of turns) await this._extractTurn(turn);
   }
 
@@ -73,7 +94,7 @@ class Extractor {
     let facts = null;
     for (let attempt = 0; attempt <= this.cfg.maxRetries; attempt++) {
       try {
-        facts = await this._callLLM(turn.content);
+        facts = await this._callLLM(turn.content, turn.role);
         if (facts?.length) break;
       } catch (err) {
         if (attempt === this.cfg.maxRetries)
@@ -86,8 +107,21 @@ class Extractor {
       return;
     }
 
+    // Grounding vector: what the source turn actually says. Facts whose
+    // embedding is far from the source are the extractor model inventing —
+    // small local models pad and embellish under pressure to produce output.
+    let srcVec = null;
+    if (turn.embedding && (!turn.embedding_model || turn.embedding_model === this.embedder.model)) {
+      srcVec = HistoryStore.toFloat32(turn.embedding);
+    }
+    if (!srcVec) {
+      srcVec = await this.embedder.embed(turn.content.slice(0, 2000)).catch(() => null);
+    }
+    const minGrounding = this.cfg.groundingMinSim ?? 0.42;
+
     let count = 0;
-    for (const item of facts) {
+    let dropped = 0;
+    for (const item of facts.slice(0, 6)) {
       const fact = typeof item === 'string' ? item : item?.fact;
       if (!fact || fact.trim().length < 10) continue;
 
@@ -96,6 +130,13 @@ class Extractor {
       const category = CATEGORIES.includes(item?.category) ? item.category : 'other';
 
       const embedding = await this.embedder.embed(fact.trim()).catch(() => null);
+      if (srcVec && embedding) {
+        const g = cosine(embedding, srcVec);
+        if (g < minGrounding) {
+          dropped++;
+          continue; // fact does not resemble the turn it claims to come from
+        }
+      }
       this.history.insertMemcell(
         turn.session_key,
         turn.id,
@@ -109,13 +150,18 @@ class Extractor {
     }
 
     this.history.markExtracted(turn.id);
-    if (count > 0)
-      log.info(`turn ${turn.id} → ${count} engram(s) (session=${turn.session_key.slice(0, 8)})`);
+    if (count > 0 || dropped > 0)
+      log.info(
+        `turn ${turn.id} → ${count} engram(s)` +
+          (dropped ? ` (+${dropped} dropped ungrounded)` : '') +
+          ` (session=${turn.session_key.slice(0, 8)})`
+      );
   }
 
-  async _callLLM(content) {
+  async _callLLM(content, role = 'assistant') {
+    const prompt = role === 'user' ? ENGRAM_EXTRACTION_USER : ENGRAM_EXTRACTION;
     const truncated = content.length > 2500 ? content.slice(0, 2500) + '...' : content;
-    const text = await brain.chat([{ role: 'user', content: ENGRAM_EXTRACTION + truncated }], {
+    const text = await brain.chat([{ role: 'user', content: prompt + truncated }], {
       maxTokens: 500,
       temperature: 0.1,
       timeoutMs: this.cfg.timeoutMs,

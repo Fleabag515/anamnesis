@@ -22,6 +22,9 @@ const CATEGORIES = ['technical', 'decision', 'preference', 'personal', 'context'
 const TIMEFRAMES = ['soon', 'days', 'weeks', 'months', 'ongoing'];
 
 class HistoryStore {
+  // Days before an unfulfilled foresight is retired, per declared timeframe.
+  static FORESIGHT_TTL_DAYS = { soon: 3, days: 7, weeks: 30, months: 90, ongoing: 45 };
+
   constructor(dbPath) {
     fs.mkdirSync(path.dirname(dbPath), { recursive: true });
     this.db = new Database(dbPath);
@@ -184,6 +187,14 @@ class HistoryStore {
       this.db.exec('ALTER TABLE engrams ADD COLUMN embedding_model TEXT');
     if (!has('episodes', 'embedding_model'))
       this.db.exec('ALTER TABLE episodes ADD COLUMN embedding_model TEXT');
+
+    // foresights.embedding — added for relevance-gated foresight injection
+    // and similarity-based auto-fulfillment (0.7.x). Legacy NULL rows are
+    // injected by recency only, exactly like before.
+    if (!has('foresights', 'embedding'))
+      this.db.exec('ALTER TABLE foresights ADD COLUMN embedding BLOB');
+    if (!has('foresights', 'embedding_model'))
+      this.db.exec('ALTER TABLE foresights ADD COLUMN embedding_model TEXT');
   }
 
   // ─── Turns ────────────────────────────────────────────────────────────────
@@ -211,23 +222,28 @@ class HistoryStore {
       .all(sessionKey);
   }
 
-  getUnextractedAssistantTurns(limit = 20) {
+  getUnextractedTurns(limit = 20, includeUser = false) {
+    const roles = includeUser ? `('assistant','user')` : `('assistant')`;
     return this.db
       .prepare(
         `
-      SELECT id, session_key, role, content FROM turns
-      WHERE extracted=0 AND role='assistant'
+      SELECT id, session_key, role, content, embedding, embedding_model FROM turns
+      WHERE extracted=0 AND role IN ${roles}
       ORDER BY created_at ASC LIMIT ?
     `
       )
       .all(limit);
   }
 
+  getUnextractedAssistantTurns(limit = 20) {
+    return this.getUnextractedTurns(limit, false);
+  }
+
   getUnscannedAssistantTurns(limit = 20) {
     return this.db
       .prepare(
         `
-      SELECT id, session_key, role, content FROM turns
+      SELECT id, session_key, role, content, embedding, embedding_model FROM turns
       WHERE foresight_scanned=0 AND role='assistant'
       ORDER BY created_at ASC LIMIT ?
     `
@@ -268,17 +284,22 @@ class HistoryStore {
       .run(sessionKey, turnId, content, blob, importance, cat, embeddingModel).lastInsertRowid;
   }
 
-  getUnclusteredMemcells(_sessionKey, limit = 100) {
-    // Cross-session: consolidate all unscened engrams regardless of session origin.
+  getUnclusteredMemcells(sessionKey, limit = 100, minAgeSec = 0) {
+    // Session-scoped: engrams from one session cluster with their own kind.
+    // (This used to be cross-session, which let scenes absorb engrams from
+    // unrelated buckets and then claim them under whichever session
+    // triggered consolidation — instant cross-contamination.) A minimum age
+    // lets a topic finish unfolding before it is frozen into a scene.
+    const cutoff = Math.floor(Date.now() / 1000) - Math.max(0, minAgeSec);
     return this.db
       .prepare(
         `
       SELECT id, content, embedding, embedding_model, importance FROM engrams
-      WHERE scene_id IS NULL
+      WHERE scene_id IS NULL AND session_key=? AND created_at<=?
       ORDER BY created_at ASC LIMIT ?
     `
       )
-      .all(limit);
+      .all(sessionKey, cutoff, limit);
   }
 
   getAllMemcells(sessionKey) {
@@ -407,23 +428,34 @@ class HistoryStore {
 
   // ─── Foresights ───────────────────────────────────────────────────────────
 
-  insertForesight(sessionKey, turnId, intention, target, timeframe, confidence) {
+  insertForesight(
+    sessionKey,
+    turnId,
+    intention,
+    target,
+    timeframe,
+    confidence,
+    embedding = null,
+    embeddingModel = null
+  ) {
     const tf = TIMEFRAMES.includes(timeframe) ? timeframe : 'soon';
+    const blob = embedding ? Buffer.from(embedding.buffer) : null;
     return this.db
       .prepare(
         `
-      INSERT INTO foresights (session_key, turn_id, intention, target, timeframe, confidence)
-      VALUES (?, ?, ?, ?, ?, ?)
+      INSERT INTO foresights (session_key, turn_id, intention, target, timeframe, confidence, embedding, embedding_model)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     `
       )
-      .run(sessionKey, turnId, intention, target || '', tf, confidence).lastInsertRowid;
+      .run(sessionKey, turnId, intention, target || '', tf, confidence, blob, embeddingModel)
+      .lastInsertRowid;
   }
 
   getActiveForesights(sessionKey, limit = 10) {
     return this.db
       .prepare(
         `
-      SELECT id, intention, target, timeframe, confidence, created_at
+      SELECT id, intention, target, timeframe, confidence, created_at, embedding, embedding_model
       FROM foresights
       WHERE session_key=? AND fulfilled=0
       ORDER BY created_at DESC LIMIT ?
@@ -448,6 +480,92 @@ class HistoryStore {
    * sized exactly to the stored bytes so callers get an isolated, safely
    * owned vector.
    */
+  /**
+   * The last N turn embeddings for a session (newest first) — the
+   * selector's short-term topic anchor. Rows whose vectors come from a
+   * different embedding model are filtered out (cosine across vector
+   * spaces is meaningless).
+   */
+  getRecentTurnVectors(sessionKey, limit = 6, embeddingModel = null) {
+    const rows = this.db
+      .prepare(
+        `
+      SELECT embedding, embedding_model FROM turns
+      WHERE session_key=? AND embedding IS NOT NULL
+      ORDER BY created_at DESC, id DESC LIMIT ?
+    `
+      )
+      .all(sessionKey, limit);
+    if (!embeddingModel) return rows;
+    return rows.filter((r) => !r.embedding_model || r.embedding_model === embeddingModel);
+  }
+
+  /** Content of the most recent stored user turn (dedup guard in the proxy). */
+  lastUserTurnContent(sessionKey) {
+    const row = this.db
+      .prepare(
+        `SELECT content FROM turns WHERE session_key=? AND role='user' ORDER BY id DESC LIMIT 1`
+      )
+      .get(sessionKey);
+    return row ? row.content : null;
+  }
+
+  /** All session buckets in this store, busiest first. */
+  listSessions() {
+    return this.db
+      .prepare(
+        `
+      SELECT session_key, COUNT(*) AS turns, MAX(created_at) AS last_at
+      FROM turns GROUP BY session_key ORDER BY turns DESC
+    `
+      )
+      .all();
+  }
+
+  /**
+   * Merge session buckets into one canonical key across every
+   * session-scoped table. One character = one continuous relationship;
+   * fragmented keys (bearer-hash accidents, per-window ids) make rotating
+   * retrieval + foresights blind to most of the character's own history.
+   * fromKeys=null merges everything that isn't already intoKey.
+   */
+  mergeSessions(intoKey, fromKeys = null) {
+    const tables = ['turns', 'engrams', 'episodes', 'foresights', 'character_observations'];
+    let total = 0;
+    this.db.transaction(() => {
+      for (const t of tables) {
+        if (fromKeys && fromKeys.length) {
+          const ph = fromKeys.map(() => '?').join(',');
+          total += this.db
+            .prepare(`UPDATE ${t} SET session_key=? WHERE session_key IN (${ph})`)
+            .run(intoKey, ...fromKeys).changes;
+        } else {
+          total += this.db
+            .prepare(`UPDATE ${t} SET session_key=? WHERE session_key<>?`)
+            .run(intoKey, intoKey).changes;
+        }
+      }
+    })();
+    return total;
+  }
+
+  /**
+   * Retire unfulfilled foresights past their timeframe's TTL
+   * (fulfilled=2 — distinct from done=1 so nothing is lost, just no longer
+   * injected). Stale intentions are a drift vector: the model keeps being
+   * told about plans from weeks ago as if they were current.
+   */
+  expireForesights(ttlDaysByTimeframe = HistoryStore.FORESIGHT_TTL_DAYS) {
+    const now = Math.floor(Date.now() / 1000);
+    let changed = 0;
+    for (const [tf, days] of Object.entries(ttlDaysByTimeframe)) {
+      changed += this.db
+        .prepare(`UPDATE foresights SET fulfilled=2 WHERE fulfilled=0 AND timeframe=? AND created_at<?`)
+        .run(tf, now - days * 86400).changes;
+    }
+    return changed;
+  }
+
   static toFloat32(blob) {
     if (!blob) return null;
     if (blob.byteLength % 4 !== 0) return null;

@@ -418,9 +418,14 @@ const commands = {
     const brain = require('./lib/brain.js');
     brain.init(cfg);
     // Wait for embedder to load
-    const deadline = Date.now() + 60000;
+    // brain.embed returns NULL (does not throw) until the embedder has
+    // loaded — the old try/catch broke out on the very first null and the
+    // whole re-embed then no-opped row by row. Wait for a real vector.
+    const deadline = Date.now() + 120000;
     while (Date.now() < deadline) {
-      try { await brain.embed('test'); break; } catch { await new Promise(r => setTimeout(r, 500)); }
+      const probe = await brain.embed('test').catch(() => null);
+      if (probe) break;
+      await new Promise((r) => setTimeout(r, 500));
     }
     const currentModel = brain.embeddingModel();
     console.log(`re-embedding with model: ${currentModel}`);
@@ -457,11 +462,191 @@ const commands = {
       } catch { /* skip */ }
     }
 
+    const turnRows = db.prepare(
+      'SELECT id, content FROM turns WHERE embedding_model != ? OR embedding_model IS NULL'
+    ).all(currentModel);
+    console.log(`\n${turnRows.length} turn(s) need re-embedding...`);
+    const updTurn = db.prepare('UPDATE turns SET embedding=?, embedding_model=? WHERE id=?');
+    let doneTurns = 0;
+    for (const row of turnRows) {
+      try {
+        const vec = await brain.embed(String(row.content).slice(0, 2000));
+        if (vec) {
+          updTurn.run(Buffer.from(new Float32Array(vec).buffer), currentModel, row.id);
+          doneTurns++;
+          if (doneTurns % 100 === 0) process.stdout.write(`  ${doneTurns}/${turnRows.length}\r`);
+        }
+      } catch { /* skip */ }
+    }
+
+    const fsRows = db.prepare(
+      'SELECT id, intention FROM foresights WHERE fulfilled=0 AND (embedding IS NULL OR embedding_model != ?)'
+    ).all(currentModel);
+    console.log(`\n${fsRows.length} active foresight(s) need embedding...`);
+    const updFs = db.prepare('UPDATE foresights SET embedding=?, embedding_model=? WHERE id=?');
+    for (const row of fsRows) {
+      try {
+        const vec = await brain.embed(row.intention);
+        if (vec) updFs.run(Buffer.from(new Float32Array(vec).buffer), currentModel, row.id);
+      } catch { /* skip */ }
+    }
+
     db.close();
-    console.log(`\n✓ re-embedded ${done}/${rows.length} engrams and ${epRows.length} episodes`);
+    console.log(`\n✓ re-embedded ${done}/${rows.length} engrams, ${epRows.length} episodes, ` +
+                `${doneTurns}/${turnRows.length} turns, ${fsRows.length} foresights`);
     console.log('  restart the character to apply: anamnesis restart ' + name);
   },
 
+
+  /**
+   * Regenerate every episode's title+summary from its own engrams using the
+   * current grounded prompts, then merge near-duplicate episodes. One-shot
+   * repair for stores whose scenes were built by the old pipeline (star-to-
+   * seed clustering + "extract 3-6 facts" prompts): those summaries are
+   * vague-to-invented, which is why retrieval either misses them (floors)
+   * or drifts (no floors). Usage: anamnesis reconsolidate <character>
+   */
+  async reconsolidate([name]) {
+    if (!name) die('usage: anamnesis reconsolidate <name>');
+    const cfgPath = path.join(os.homedir(), '.anamnesis', 'characters', name, 'config.json');
+    if (!fs.existsSync(cfgPath)) die(`character '${name}' not found`);
+    const cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
+    const dbPath = (cfg.history?.dbPath || '').replace(/^~/, os.homedir());
+    if (!fs.existsSync(dbPath)) die(`no database found at ${dbPath}`);
+
+    const brain = require('./lib/brain.js');
+    const { EPISODE_SCENE } = require('./lib/prompts.js');
+    brain.init(cfg);
+    const deadline = Date.now() + 120000;
+    while (Date.now() < deadline) {
+      const probe = await brain.embed('test').catch(() => null);
+      if (probe) break;
+      await new Promise((r) => setTimeout(r, 500));
+    }
+    const currentModel = brain.embeddingModel();
+
+    const HistoryStore = require('./history.js');
+    const store = new HistoryStore(dbPath);
+    const cosine = (a, b) => {
+      if (!a || !b || a.length !== b.length) return 0;
+      let dot = 0, na = 0, nb = 0;
+      for (let i = 0; i < a.length; i++) { dot += a[i]*b[i]; na += a[i]*a[i]; nb += b[i]*b[i]; }
+      const d = Math.sqrt(na) * Math.sqrt(nb);
+      return d === 0 ? 0 : dot / d;
+    };
+    const norm = (v) => {
+      let n = 0; for (const x of v) n += x * x; n = Math.sqrt(n) || 1;
+      return Float32Array.from(v, (x) => x / n);
+    };
+
+    const scenes = store.getScenes('unused');
+    console.log(`${scenes.length} episode(s) to reconsolidate...`);
+    let redone = 0, kept = 0, dropped = 0;
+    for (const s of scenes) {
+      let ids = [];
+      try { ids = JSON.parse(s.engram_ids); } catch { ids = []; }
+      const cells = ids.length
+        ? store.db.prepare(`SELECT content, embedding, importance FROM engrams WHERE id IN (${ids.map(() => '?').join(',')})`).all(...ids)
+        : [];
+      if (!cells.length) {
+        // Orphaned scene: its engrams were pruned — the summary is backed by
+        // nothing. Remove rather than keep an unfalsifiable memory.
+        store.db.prepare('DELETE FROM episodes WHERE id=?').run(s.id);
+        dropped++;
+        continue;
+      }
+      const vecs = cells.map((c) => HistoryStore.toFloat32(c.embedding)).filter(Boolean);
+      let centroid = null;
+      if (vecs.length) {
+        const dim = vecs[0].length;
+        const sum = new Float32Array(dim);
+        for (const v of vecs) { if (v.length === dim) for (let k = 0; k < dim; k++) sum[k] += v[k]; }
+        centroid = norm(sum);
+      }
+      const facts = cells.map((c) => c.content).slice(0, 12);
+      const factList = facts.map((f, i) => `${i + 1}. ${f}`).join('\n');
+      let data = null;
+      try {
+        const text = await brain.chat([{ role: 'user', content: EPISODE_SCENE + factList }],
+          { maxTokens: 256, temperature: 0.2, timeoutMs: 90000 });
+        data = brain.tryParseJsonObject(text);
+      } catch { data = null; }
+      if (!data?.title || !data?.summary) {
+        const byImp = [...cells].sort((a, b) => (b.importance ?? 0.5) - (a.importance ?? 0.5));
+        data = {
+          title: byImp[0].content.split(/\s+/).slice(0, 6).join(' '),
+          summary: byImp.slice(0, 3).map((c) => c.content).join(' — ').slice(0, 300),
+        };
+      }
+      let emb = await brain.embed(String(data.summary)).catch(() => null);
+      if (centroid && (!emb || cosine(emb, centroid) < 0.45)) emb = centroid;
+      store.updateScene(s.id, String(data.title), String(data.summary),
+        emb ? new Float32Array(emb) : null, ids, s.avg_importance ?? 0.5, currentModel);
+      redone++;
+      if (redone % 10 === 0) console.log(`  ${redone}/${scenes.length}...`);
+    }
+
+    // Merge pass: absorb near-duplicate episodes into their older sibling.
+    const fresh = store.getScenes('unused')
+      .map((x) => ({ ...x, vec: HistoryStore.toFloat32(x.embedding) }))
+      .filter((x) => x.vec);
+    const gone = new Set();
+    let merged = 0;
+    for (let i = 0; i < fresh.length; i++) {
+      if (gone.has(fresh[i].id)) continue;
+      for (let j = i + 1; j < fresh.length; j++) {
+        if (gone.has(fresh[j].id)) continue;
+        if (cosine(fresh[i].vec, fresh[j].vec) < 0.85) continue;
+        let ia = [], ja = [];
+        try { ia = JSON.parse(fresh[i].engram_ids); } catch {}
+        try { ja = JSON.parse(fresh[j].engram_ids); } catch {}
+        const ids = [...new Set([...ia, ...ja])];
+        store.updateScene(fresh[i].id, fresh[i].title, fresh[i].summary,
+          fresh[i].vec, ids, ((fresh[i].avg_importance ?? 0.5) + (fresh[j].avg_importance ?? 0.5)) / 2,
+          currentModel);
+        for (const cid of ja) store.assignMemcellToScene(cid, fresh[i].id);
+        store.db.prepare('DELETE FROM episodes WHERE id=?').run(fresh[j].id);
+        gone.add(fresh[j].id);
+        merged++;
+      }
+    }
+    store.close();
+    console.log(`✓ reconsolidated ${redone} episode(s), dropped ${dropped} orphaned, merged ${merged} near-duplicate(s) (${kept} untouched)`);
+    console.log('  restart the character to apply: anamnesis restart ' + name);
+  },
+
+  /**
+   * Merge fragmented session buckets into one canonical key.
+   * Usage: anamnesis migrate-sessions <character> [--into <sessionKey>]
+   * Default target: oc:pleiades:<character> (what Pleiades' Engine sends
+   * via X-Session-Id). Requires the character to be stopped.
+   */
+  async 'migrate-sessions'(args) {
+    const name = args[0];
+    if (!name) die('usage: anamnesis migrate-sessions <character> [--into <sessionKey>]');
+    const intoIdx = args.indexOf('--into');
+    const into = intoIdx !== -1 ? args[intoIdx + 1] : `oc:pleiades:${name}`;
+    if (!into) die('--into requires a value');
+
+    await ensureDaemon();
+    const r = await client.getCharacter(name);
+    if (r.status !== 200) die(`character '${name}' not found`);
+    const running = r.body.running ?? r.body.active;
+    if (running) die(`'${name}' is running — stop it first: anamnesis stop ${name}`);
+
+    const HistoryStore = require('./history.js');
+    const path = require('path');
+    const os = require('os');
+    const dbPath = path.join(os.homedir(), '.anamnesis', 'characters', name, 'history.db');
+    const store = new HistoryStore(dbPath);
+    const before = store.listSessions();
+    console.log('session buckets before:');
+    for (const s of before) console.log(`  ${s.session_key}  (${s.turns} turns)`);
+    const changed = store.mergeSessions(into);
+    store.close();
+    console.log(`✓ merged ${before.length} bucket(s) → '${into}' (${changed} rows re-keyed)`);
+    console.log(`  start it again with: anamnesis start ${name}`);
+  },
 };
 
 // ─── Aliases ──────────────────────────────────────────────────────────────────

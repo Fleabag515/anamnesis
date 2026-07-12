@@ -60,7 +60,7 @@ async function start(config = loadConfig()) {
   await persona.init();
   const selector = new Selector(config, history, embedder, persona);
   const extractor = new Extractor(config, history, embedder);
-  const foresightExtractor = new ForesightExtractor(config, history);
+  const foresightExtractor = new ForesightExtractor(config, history, embedder);
   const consolidator = new Consolidator(config, history, embedder);
 
   const pruned = history.prune(config.history.maxAgeDays);
@@ -71,6 +71,31 @@ async function start(config = loadConfig()) {
   foresightExtractor.processBacklog().catch((e) => log.warn('backlog (foresight):', e.message));
 
   consolidator.start(config.memory.consolidationIntervalMs);
+
+  // ─── Upstream context-window probe ────────────────────────────────────────
+  // If the upstream serves /props (llama-server and Pleiades' elastic engine
+  // both do), clamp the selector's token budget to the real window. Without
+  // this, a 50k-token context sent at an 8k-window server gets front-
+  // truncated upstream — the system prompt and memory block die first, which
+  // presents as sudden amnesia + rampant hallucination mid-conversation.
+  let _upWin = { value: null, at: 0 };
+  async function upstreamWindow() {
+    const now = Date.now();
+    if (now - _upWin.at < 60000) return _upWin.value;
+    _upWin.at = now;
+    try {
+      const base = config.upstream.baseUrl.replace(/\/v1\/?$/, '');
+      const r = await fetch(base + '/props', { signal: AbortSignal.timeout(1500) });
+      if (r.ok) {
+        const j = await r.json();
+        const n = j.n_ctx ?? j.default_generation_settings?.n_ctx ?? null;
+        _upWin.value = typeof n === 'number' && n > 0 ? n : null;
+      }
+    } catch {
+      _upWin.value = null; // upstream has no /props — no clamp
+    }
+    return _upWin.value;
+  }
 
   // ─── Upstream wiring ──────────────────────────────────────────────────────
 
@@ -209,11 +234,15 @@ async function start(config = loadConfig()) {
 
   const server = http.createServer((req, res) => {
     if (req.method === 'GET' && req.url === '/anamnesis/status') {
-      const stats = history.stats('default');
+      const sessions = history.listSessions();
+      const busiest = sessions[0]?.session_key ?? 'default';
+      const stats = history.stats(busiest);
       res.writeHead(200, { 'Content-Type': 'application/json' });
       return res.end(
         JSON.stringify({
           status: 'ok',
+          session: busiest,
+          session_count: sessions.length,
           ...stats,
           upstream: config.upstream.baseUrl,
           embedding_model: brain.embeddingModel(),
@@ -257,7 +286,11 @@ async function start(config = loadConfig()) {
         // string to embed.
         const userMsg = [...parsed.messages].reverse().find((m) => m.role === 'user');
         const userText = extractContentText(userMsg?.content);
-        if (userText) {
+        // Agentic clients re-send the same growing messages array once per
+        // tool round-trip, so the same user turn used to be stored N+1 times
+        // for a turn with N tool calls — duplicate embeddings, skewed
+        // retrieval, wasted extraction. Store only when it's actually new.
+        if (userText && history.lastUserTurnContent(sessionKey) !== userText) {
           const vec = await embedder.embed(userText).catch(() => null);
           const est = Math.ceil(userText.length / config.context.charsPerToken);
           history.insertTurn(sessionKey, 'user', userText, vec, est, embedder.model);
@@ -266,7 +299,11 @@ async function start(config = loadConfig()) {
         // 2. Scene-guided context selection.
         let selectedMessages = parsed.messages;
         try {
-          selectedMessages = await selector.select(sessionKey, parsed.messages);
+          const upCtx = await upstreamWindow();
+          const budgetCeiling = upCtx
+            ? Math.max(2048, Math.floor(upCtx * 0.85) - (parsed.max_tokens ?? 600))
+            : undefined;
+          selectedMessages = await selector.select(sessionKey, parsed.messages, { budgetCeiling });
         } catch (err) {
           log.error('selector error, falling back to original messages:', err.message);
         }
