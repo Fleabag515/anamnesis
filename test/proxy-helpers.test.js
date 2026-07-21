@@ -5,6 +5,8 @@ const {
   expandHome,
   extractContentText,
   getSessionKey,
+  getMemoryCategory,
+  formatDuration,
   buildUpstreamHeaders,
   makeSseAccumulator,
 } = require('../src/lib/proxy-helpers.js');
@@ -319,4 +321,41 @@ test('stripThinkingTokens: PUA opener residue \\uf06c stripped', () => {
 test('stripThinkingTokens: real content with <channel|> orphan preserved', () => {
   // ensure real text before the orphaned closer is kept
   assert.strictEqual(stripThinkingTokens('Hello!<channel|>'), 'Hello!');
+});
+
+// ─── getMemoryCategory ───────────────────────────────────────────────────────
+
+test('getMemoryCategory: defaults to fleagle when header absent', () => {
+  assert.equal(getMemoryCategory({}), 'fleagle');
+});
+
+test('getMemoryCategory: reads X-Memory-Category header, lowercased/trimmed', () => {
+  assert.equal(getMemoryCategory({ 'x-memory-category': ' Background ' }), 'background');
+});
+
+test('getMemoryCategory: blank header falls back to default', () => {
+  assert.equal(getMemoryCategory({ 'x-memory-category': '   ' }), 'fleagle');
+});
+
+test('getMemoryCategory: custom fallback is honored', () => {
+  assert.equal(getMemoryCategory({}, 'task'), 'task');
+});
+
+// ─── formatDuration ──────────────────────────────────────────────────────────
+
+test('formatDuration: minutes only', () => {
+  assert.equal(formatDuration(40 * 60), '40m');
+});
+
+test('formatDuration: hours and minutes', () => {
+  assert.equal(formatDuration(14 * 3600 + 22 * 60), '14h 22m');
+});
+
+test('formatDuration: days and hours', () => {
+  assert.equal(formatDuration(3 * 86400 + 2 * 3600), '3d 2h');
+});
+
+test('formatDuration: negative/zero clamps to 0m', () => {
+  assert.equal(formatDuration(-5), '0m');
+  assert.equal(formatDuration(0), '0m');
 });

@@ -35,7 +35,7 @@
 
 const HistoryStore = require('./history.js');
 const Embedder = require('./embedder.js');
-const { extractContentText, stripThinkingTokens } = require('./lib/proxy-helpers.js');
+const { extractContentText, stripThinkingTokens, formatDuration } = require('./lib/proxy-helpers.js');
 const log = require('./lib/logger.js').make('selector');
 
 // Defaults — every one of these is overridable via config.context.*
@@ -48,6 +48,8 @@ const ANCHOR_WEIGHT_SHORT = 0.65; // anchor share for short/deictic queries
 const SHORT_QUERY_CHARS = 40; // "short query" threshold
 const FORESIGHT_MIN_SIM = 0.22; // min relevance for a foresight to inject
 const FORESIGHT_MAX = 3; // max foresights injected
+const DOWNTIME_MIN_GAP_MINUTES = 30; // below this gap, no continuity note (normal back-and-forth)
+const CATEGORY_QUOTAS_DEFAULT = { fleagle: 0.3 }; // guaranteed floor share of rotating budget
 // Days before an unfulfilled foresight stops being injected, per timeframe.
 // Single source of truth lives on HistoryStore (the consolidator's expiry
 // pass uses the same map).
@@ -173,15 +175,17 @@ class Selector {
 
     const scenes = this.history.getScenes(sessionKey);
 
-    // ─── Stage 1: build memory + foresight injection block ──────────────────
+    // ─── Stage 1: build memory + foresight + continuity injection block ─────
     const foresights = this._relevantForesights(sessionKey, queryVec, currentModel, rawVec);
+    const downtimeNote = this._buildDowntimeNote(opts.lastActivityAt);
     const enrichedSystem = this._buildSystemWithMemory(
       systemMsgs,
       scenes,
       queryVec,
       currentModel,
       foresights,
-      rawVec
+      rawVec,
+      downtimeNote
     );
 
     // ─── Budget accounting ─────────────────────────────────────────────────
@@ -216,6 +220,9 @@ class Selector {
           minChunkChars
         );
       }
+      // NOTE: category quotas are applied inside _fillBudget (both retrieval
+      // paths funnel through it), reading this.cfg.categoryQuotas directly —
+      // no extra params needed on the two call sites above.
     }
 
     const final = [...enrichedSystem, ...rotatingMsgs, ...recencyMsgs];
@@ -331,13 +338,49 @@ class Selector {
   }
 
   /**
-   * Append <memory> and <foresight> blocks to the last system message.
+   * Build the downtime-awareness continuity note, or null if none is
+   * warranted. `lastActivityAt` is the unix-seconds timestamp of the
+   * session's most recent turn BEFORE the incoming one (captured by
+   * proxy.js prior to inserting the new user turn) — null/undefined for a
+   * brand-new session, in which case there's nothing to be aware of.
+   *
+   * Deliberately factual, not emotive: this states the elapsed time and
+   * lets the character react to it in its own voice, rather than
+   * pre-scripting a reaction (that's persona's job, not the memory layer's).
    */
-  _buildSystemWithMemory(systemMsgs, scenes, queryVec, currentModel, foresights = [], rawVec = null) {
+  _buildDowntimeNote(lastActivityAt) {
+    const cfg = this.cfg?.downtimeAwareness;
+    if (cfg?.enabled === false) return null;
+    if (!lastActivityAt) return null;
+    const gapSeconds = Date.now() / 1000 - lastActivityAt;
+    const minGapMinutes = typeof cfg?.minGapMinutes === 'number' ? cfg.minGapMinutes : DOWNTIME_MIN_GAP_MINUTES;
+    if (gapSeconds < minGapMinutes * 60) return null;
+    const last = new Date(lastActivityAt * 1000).toISOString().replace('T', ' ').slice(0, 16) + ' UTC';
+    return (
+      `${formatDuration(gapSeconds)} have passed since the last exchange (last active ${last}). ` +
+      `This is real elapsed time, not a new topic — you are aware the gap happened. React to it ` +
+      `naturally in character if it comes up; do not pretend no time passed, and do not treat this ` +
+      `note itself as something to repeat verbatim.`
+    );
+  }
+
+  /**
+   * Append <continuity>/<memory>/<foresight> blocks to the last system message.
+   */
+  _buildSystemWithMemory(
+    systemMsgs,
+    scenes,
+    queryVec,
+    currentModel,
+    foresights = [],
+    rawVec = null,
+    downtimeNote = null
+  ) {
     const hasMemory = scenes.length > 0 && queryVec;
     const hasForesight = foresights.length > 0;
+    const hasDowntime = !!downtimeNote;
     const _charBlock = this.persona ? this.persona.getCharacterBlock() : '';
-    if (!hasMemory && !hasForesight) {
+    if (!hasMemory && !hasForesight && !hasDowntime) {
       if (!_charBlock) return systemMsgs;
       // Inject character block even when no memories or foresights are present
       if (systemMsgs.length === 0) return [{ role: 'system', content: _charBlock.trim() }];
@@ -352,6 +395,10 @@ class Selector {
     // Character block is always prepended (persona handles its own enabled check)
     const characterBlock = this.persona ? this.persona.getCharacterBlock() : '';
     let injection = characterBlock;
+
+    if (hasDowntime) {
+      injection += `\n\n<continuity>\n${downtimeNote}\n</continuity>`;
+    }
 
     if (hasMemory) {
       const injMin = this._t('injectionMinSim', INJECTION_MIN_SIM);
@@ -515,21 +562,75 @@ class Selector {
    * one is rejected — at the cost of slight non-monotonicity in selection
    * order. We re-sort the selected items by created_at so the conversation
    * reads chronologically when re-injected.
+   *
+   * Category-partitioned quotas (config.context.categoryQuotas, e.g.
+   * `{ fleagle: 0.3 }`): before the plain score-ranked fill above ran
+   * unconditionally, so a long stretch of unrelated/background-tagged
+   * content (see history.js turns.category / proxy-helpers.js
+   * getMemoryCategory) could out-compete older owner-relevant turns for
+   * every slot in this budget purely by volume. Each configured category
+   * now gets first crack at a reserved floor SHARE of the token budget and
+   * (at least one, proportionally more) slot, filled from that category's
+   * own best-ranked candidates only. Whatever floor budget/slots a category
+   * doesn't use (too few qualifying candidates) falls back into the shared
+   * slack pool below, exactly like unclaimed capacity in a resource quota.
+   * The remaining budget+slots after all floors are honored are filled
+   * from every not-yet-selected candidate by pure score, same as before —
+   * so a caller that never sets categoryQuotas (or never tags a category)
+   * sees byte-for-byte the old behavior.
    */
   _fillBudget(ranked, maxSlots, budget, cpt, _minChars) {
     const selected = [];
     const seenIds = new Set();
     let remaining = budget;
-    for (const t of ranked) {
-      if (selected.length >= maxSlots) break;
-      if (seenIds.has(t.id)) continue;
-      const cost = Math.ceil((t.content?.length ?? 0) / cpt);
-      if (cost > remaining) continue; // skip oversized; try the next, smaller item
-      selected.push(t);
-      seenIds.add(t.id);
-      remaining -= cost;
-      this.history.bumpTurnRecall(t.id);
+    let remainingSlots = maxSlots;
+
+    const take = (items, budgetCap, slotCap) => {
+      let spentTokens = 0;
+      let spentSlots = 0;
+      for (const t of items) {
+        if (spentSlots >= slotCap) break;
+        if (seenIds.has(t.id)) continue;
+        const cost = Math.ceil((t.content?.length ?? 0) / cpt);
+        if (cost > budgetCap - spentTokens) continue; // skip oversized, try a smaller one
+        selected.push(t);
+        seenIds.add(t.id);
+        spentTokens += cost;
+        spentSlots += 1;
+        this.history.bumpTurnRecall(t.id);
+      }
+      return { spentTokens, spentSlots };
+    };
+
+    // Undefined (key never set) -> module default applies automatically, so
+    // existing characters get the floor without a config migration. An
+    // EXPLICIT {} opts a character out entirely (nullish-coalescing only
+    // falls back on null/undefined, not on an empty object).
+    const quotas = this.cfg?.categoryQuotas ?? CATEGORY_QUOTAS_DEFAULT;
+    if (quotas && typeof quotas === 'object') {
+      // Largest floor first: with small slot counts, rounding a floor up to
+      // "at least 1 slot" for every category could otherwise overcommit
+      // maxSlots — processing biggest-guarantee-first means any such
+      // overcommit eats into the smaller, later floors rather than the
+      // largest one.
+      const cats = Object.entries(quotas)
+        .filter(([, share]) => typeof share === 'number' && share > 0)
+        .sort((a, b) => b[1] - a[1]);
+      for (const [cat, share] of cats) {
+        if (remaining <= 0 || remainingSlots <= 0) break;
+        const floorTokens = Math.min(Math.floor(budget * share), remaining);
+        const floorSlots = Math.min(Math.max(1, Math.round(maxSlots * share)), remainingSlots);
+        const bucket = ranked.filter((t) => (t.category || 'fleagle') === cat && !seenIds.has(t.id));
+        if (!bucket.length) continue;
+        const { spentTokens, spentSlots } = take(bucket, floorTokens, floorSlots);
+        remaining -= spentTokens;
+        remainingSlots -= spentSlots;
+      }
     }
+
+    // Shared slack pool: every not-yet-selected candidate, pure score order.
+    take(ranked, remaining, remainingSlots);
+
     selected.sort((a, b) => (a.created_at ?? 0) - (b.created_at ?? 0));
     return selected.map((t) => ({ role: t.role, content: stripThinkingTokens(t.content) }));
   }

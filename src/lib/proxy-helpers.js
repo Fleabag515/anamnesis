@@ -67,6 +67,42 @@ function expandHome(obj, home = os.homedir()) {
  *   2. SHA-256 prefix of the bearer token (avoids leaking credential bytes)
  *   3. "default" for unauthenticated local clients
  */
+/**
+ * Which memory-quota category this request's turns should be tagged with
+ * (see history.js turns.category / selector.js _fillBudget's category-
+ * partitioned quotas). Explicit opt-in only: a caller must send
+ * `X-Memory-Category`. Everything else defaults to 'fleagle' (owner-
+ * authored), which is the safe no-op default — category quotas have zero
+ * effect on anyone who never sends this header. Pleiades does not send it
+ * yet as of this writing; wiring it up (e.g. tagging cron/autonomous-task
+ * requests as 'background') is a caller-side follow-up, not part of this
+ * change.
+ */
+function getMemoryCategory(headers, fallback = 'fleagle') {
+  const raw = headers['x-memory-category'];
+  if (typeof raw !== 'string') return fallback;
+  const cat = raw.trim().toLowerCase();
+  return cat || fallback;
+}
+
+/**
+ * Render a gap in seconds as a short human duration ("14h 22m", "3d 2h",
+ * "40m"). Used to build the downtime-awareness continuity note — see
+ * selector.js _buildDowntimeNote(). Always rounds down to whole units;
+ * a gap under a minute renders as "0m" rather than disappearing, so a
+ * caller can still tell a note was suppressed by the minGapMinutes floor
+ * versus genuinely being ~0.
+ */
+function formatDuration(seconds) {
+  const s = Math.max(0, Math.floor(seconds));
+  const days = Math.floor(s / 86400);
+  const hours = Math.floor((s % 86400) / 3600);
+  const mins = Math.floor((s % 3600) / 60);
+  if (days > 0) return `${days}d ${hours}h`;
+  if (hours > 0) return `${hours}h ${mins}m`;
+  return `${mins}m`;
+}
+
 function getSessionKey(headers, upstreamApiKey = '') {
   const explicit = headers['x-openclaw-session'] ?? headers['x-session-id'];
   if (explicit) return `oc:${explicit}`;
@@ -304,6 +340,8 @@ module.exports = {
   expandHome,
   extractContentText,
   getSessionKey,
+  getMemoryCategory,
+  formatDuration,
   buildUpstreamHeaders,
   makeSseAccumulator,
   stripThinkingTokens,

@@ -79,3 +79,157 @@ test('select() still includes the user message for a normal short turn (no regre
   const result = await selector.select('session-1', incoming);
   assert.ok(result.some((m) => m.role === 'user'));
 });
+
+// ─── downtime-awareness ──────────────────────────────────────────────────────
+
+function makeConfigWithDowntime(overrides = {}) {
+  const cfg = makeConfig();
+  cfg.context.downtimeAwareness = { enabled: true, minGapMinutes: 30, ...overrides };
+  return cfg;
+}
+
+test('_buildDowntimeNote: null when there is no prior activity (brand-new session)', () => {
+  const selector = new Selector(makeConfigWithDowntime(), makeMockHistory(), makeMockEmbedder(), null);
+  assert.equal(selector._buildDowntimeNote(null), null);
+  assert.equal(selector._buildDowntimeNote(undefined), null);
+});
+
+test('_buildDowntimeNote: null when the gap is under minGapMinutes', () => {
+  const selector = new Selector(makeConfigWithDowntime({ minGapMinutes: 30 }), makeMockHistory(), makeMockEmbedder(), null);
+  const fiveMinAgo = Date.now() / 1000 - 5 * 60;
+  assert.equal(selector._buildDowntimeNote(fiveMinAgo), null);
+});
+
+test('_buildDowntimeNote: returns a formatted note when the gap exceeds minGapMinutes', () => {
+  const selector = new Selector(makeConfigWithDowntime({ minGapMinutes: 30 }), makeMockHistory(), makeMockEmbedder(), null);
+  const fourteenHoursAgo = Date.now() / 1000 - (14 * 3600 + 22 * 60);
+  const note = selector._buildDowntimeNote(fourteenHoursAgo);
+  assert.ok(note, 'expected a continuity note for a 14h+ gap');
+  assert.match(note, /14h 22m/);
+  assert.match(note, /aware the gap happened/);
+});
+
+test('_buildDowntimeNote: disabled via config returns null regardless of gap', () => {
+  const selector = new Selector(makeConfigWithDowntime({ enabled: false }), makeMockHistory(), makeMockEmbedder(), null);
+  const daysAgo = Date.now() / 1000 - 5 * 86400;
+  assert.equal(selector._buildDowntimeNote(daysAgo), null);
+});
+
+test('select(): injects a <continuity> system block when lastActivityAt shows a long gap', async () => {
+  const selector = new Selector(makeConfigWithDowntime({ minGapMinutes: 30 }), makeMockHistory(), makeMockEmbedder(), null);
+  const incoming = [
+    { role: 'system', content: 'You are Mark.' },
+    { role: 'user', content: 'hey, back' },
+  ];
+  const twoDaysAgo = Date.now() / 1000 - 2 * 86400;
+  const result = await selector.select('session-1', incoming, { lastActivityAt: twoDaysAgo });
+  const sys = result.find((m) => m.role === 'system');
+  assert.ok(sys, 'expected a system message in the selected context');
+  assert.match(sys.content, /<continuity>/);
+  assert.match(sys.content, /2d 0h/);
+});
+
+test('select(): no <continuity> block for a normal back-and-forth (no lastActivityAt passed)', async () => {
+  const selector = new Selector(makeConfigWithDowntime(), makeMockHistory(), makeMockEmbedder(), null);
+  const incoming = [
+    { role: 'system', content: 'You are Mark.' },
+    { role: 'user', content: 'what about the other one' },
+  ];
+  const result = await selector.select('session-1', incoming);
+  const sys = result.find((m) => m.role === 'system');
+  // No memory/foresight/downtime and no persona -> system messages pass through untouched.
+  assert.equal(sys.content, 'You are Mark.');
+});
+
+// ─── category-partitioned quotas (_fillBudget) ───────────────────────────────
+
+function makeItem(id, category, content = 'x'.repeat(40)) {
+  return { id, role: 'assistant', content, category, created_at: id };
+}
+
+test('_fillBudget: an explicit empty categoryQuotas ({}) opts out entirely -- plain score-ranked fill', () => {
+  const cfg = makeConfig();
+  cfg.context.categoryQuotas = {}; // explicit opt-out, distinct from "key never set"
+  const bumped = [];
+  const spyHistory = makeMockHistory();
+  spyHistory.bumpTurnRecall = (id) => bumped.push(id);
+  const selector = new Selector(cfg, spyHistory, makeMockEmbedder(), null);
+  // 10 background items outrank (are listed before) 2 fleagle items; maxSlots=3.
+  const ranked = [
+    ...Array.from({ length: 10 }, (_, i) => makeItem(i, 'background')),
+    makeItem(100, 'fleagle'),
+    makeItem(101, 'fleagle'),
+  ];
+  const out = selector._fillBudget(ranked, 3, 10000, 4, 40);
+  assert.equal(out.length, 3);
+  // Pure score order with quotas opted out: the first 3 (all background) win.
+  assert.deepEqual(bumped.sort((a, b) => a - b), [0, 1, 2]);
+});
+
+test('_fillBudget: categoryQuotas key never set at all -> module default (fleagle floor) applies automatically', () => {
+  const bumped = [];
+  const spyHistory = makeMockHistory();
+  spyHistory.bumpTurnRecall = (id) => bumped.push(id);
+  const selector2 = new Selector(makeConfig(), spyHistory, makeMockEmbedder(), null);
+  const ranked = [
+    ...Array.from({ length: 10 }, (_, i) => makeItem(i, 'background')),
+    makeItem(100, 'fleagle'),
+    makeItem(101, 'fleagle'),
+  ];
+  selector2._fillBudget(ranked, 3, 10000, 4, 40);
+  assert.ok(
+    bumped.includes(100) || bumped.includes(101),
+    `expected the default fleagle floor to protect at least one fleagle item even with no ` +
+      `explicit config, got ids: ${bumped.join(',')}`
+  );
+});
+
+test('_fillBudget: categoryQuotas guarantees a fleagle floor even under a background flood', () => {
+  const cfg = makeConfig();
+  cfg.context.categoryQuotas = { fleagle: 0.5 };
+  const selector = new Selector(cfg, makeMockHistory(), makeMockEmbedder(), null);
+  // 20 background items all ranked ahead of 2 fleagle items -- under the old
+  // unconditional fill, maxSlots=3 would be entirely background.
+  const ranked = [
+    ...Array.from({ length: 20 }, (_, i) => makeItem(i, 'background')),
+    makeItem(200, 'fleagle'),
+    makeItem(201, 'fleagle'),
+  ];
+  const out = selector._fillBudget(ranked, 3, 10000, 4, 40);
+  assert.equal(out.length, 3);
+  // We can't see category on the returned {role, content} shape, so assert
+  // indirectly via content: fleagle items are id 200/201 -> content 'x'*40
+  // for all items (same content), so instead check floor logic directly by
+  // re-deriving which ids got selected through a spy-free approach: rerun
+  // fillBudget's bookkeeping via the ids' recall bumps.
+  const bumped = [];
+  const spyHistory = makeMockHistory();
+  spyHistory.bumpTurnRecall = (id) => bumped.push(id);
+  const selector2 = new Selector(cfg, spyHistory, makeMockEmbedder(), null);
+  selector2._fillBudget(ranked, 3, 10000, 4, 40);
+  assert.ok(
+    bumped.includes(200) || bumped.includes(201),
+    `expected at least one fleagle-category item (200/201) to survive the floor guarantee, got ids: ${bumped.join(',')}`
+  );
+});
+
+test('_fillBudget: unclaimed category floor budget falls back to the shared slack pool', () => {
+  const cfg = makeConfig();
+  cfg.context.categoryQuotas = { fleagle: 0.5 };
+  const bumped = [];
+  const spyHistory = makeMockHistory();
+  spyHistory.bumpTurnRecall = (id) => bumped.push(id);
+  const selector = new Selector(cfg, spyHistory, makeMockEmbedder(), null);
+  // No fleagle candidates at all -- the floor share must not shrink the
+  // total selected below maxSlots when enough background candidates exist.
+  const ranked = Array.from({ length: 10 }, (_, i) => makeItem(i, 'background'));
+  const out = selector._fillBudget(ranked, 3, 10000, 4, 40);
+  assert.equal(out.length, 3, 'unclaimed floor budget should fall back to slack, not shrink the result');
+});
+
+test('_fillBudget: a category with no configured quota is treated as ordinary slack (backward compatible)', () => {
+  const selector = new Selector(makeConfig(), makeMockHistory(), makeMockEmbedder(), null);
+  const ranked = [makeItem(1, undefined), makeItem(2, undefined)];
+  const out = selector._fillBudget(ranked, 5, 10000, 4, 40);
+  assert.equal(out.length, 2);
+});

@@ -4,6 +4,28 @@ All notable changes to this project are documented in this file.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased (2026-07-21)
+
+### Added
+- **Category-partitioned memory quotas.** `turns.category` (default `'fleagle'`) plus
+  `config.context.categoryQuotas` (default `{ fleagle: 0.3 }`) give one category a
+  guaranteed floor SHARE of the rotating-slot retrieval budget, filled from that
+  category's own best-ranked candidates before the shared slack pool opens up to
+  everyone. Fixes a real gap: previously a long stretch of unrelated/background-tagged
+  content could out-compete older owner-relevant turns for every slot purely by volume.
+  Opt-in via the `X-Memory-Category` request header (`getMemoryCategory` in
+  `lib/proxy-helpers.js`); everything that never sends it is `'fleagle'`, so this is a
+  no-op for any caller that doesn't participate. An explicit `categoryQuotas: {}` opts a
+  character out entirely.
+- **Downtime-awareness continuity note.** When the gap since a session's last turn
+  exceeds `config.context.downtimeAwareness.minGapMinutes` (default 30), `select()`
+  injects a factual `<continuity>` block stating how long it's been (via the new
+  `getLastTurnTimestamp()` on HistoryStore) instead of the character silently
+  continuing as if no time passed. Disable per-character with
+  `downtimeAwareness.enabled: false`.
+- 26 new tests across `test/proxy-helpers.test.js`, `test/history.test.js`, and
+  `test/selector.test.js` (196 total, all passing).
+
 ## [0.3.0]
 ### Fixed
 - `disableThinking: true` now also sends `reasoning: "off"` in the upstream request body,

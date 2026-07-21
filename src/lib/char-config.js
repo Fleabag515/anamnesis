@@ -11,6 +11,16 @@ const DEFAULTS = {
     rotatingSlots: 6,
     charsPerToken: 3.5,
     minChunkChars: 50,
+    // Category-partitioned quotas: guaranteed floor SHARE (0..1) of the
+    // rotating-slot budget reserved for each category, filled from that
+    // category's own candidates before anything competes in the shared
+    // slack pool. Only categories a caller actually opts into (via the
+    // X-Memory-Category header) participate — see history.js/selector.js.
+    categoryQuotas: { fleagle: 0.3 },
+    // Downtime-awareness: inject an explicit elapsed-time note when the gap
+    // since the session's last turn exceeds minGapMinutes, instead of
+    // silently continuing as if no time passed.
+    downtimeAwareness: { enabled: true, minGapMinutes: 30 },
   },
   memory: {
     consolidationIntervalMs: 120000,

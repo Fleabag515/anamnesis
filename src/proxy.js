@@ -32,6 +32,7 @@ const {
   expandHome,
   extractContentText,
   getSessionKey,
+  getMemoryCategory,
   buildUpstreamHeaders,
   makeSseAccumulator,
   stripThinkingTokens,
@@ -212,7 +213,7 @@ async function start(config = loadConfig()) {
   }
 
 
-  function recordAssistantTurn(sessionKey, content) {
+  function recordAssistantTurn(sessionKey, content, category = 'fleagle') {
     if (!content) return;
     // Defer to the next tick so the client connection is fully closed first;
     // embedding + extraction never block the response.
@@ -220,7 +221,10 @@ async function start(config = loadConfig()) {
       try {
         const vec = await embedder.embed(content.slice(0, 2000)).catch(() => null);
         const est = Math.ceil(content.length / config.context.charsPerToken);
-        history.insertTurn(sessionKey, 'assistant', content, vec, est, embedder.model);
+        // Tag the reply with the SAME category as the request that produced
+        // it (e.g. a reply generated during a 'background' autonomous task
+        // stays 'background' too) — see history.js turns.category.
+        history.insertTurn(sessionKey, 'assistant', content, vec, est, embedder.model, category);
         extractor.processBatch().catch((e) => log.warn('extractor:', e.message));
         foresightExtractor.processBatch().catch((e) => log.warn('foresight:', e.message));
         persona.observeResponse(sessionKey, null, content);
@@ -277,7 +281,14 @@ async function start(config = loadConfig()) {
         if (!Array.isArray(parsed.messages)) return passthrough(req, res, rawBody);
 
         const sessionKey = getSessionKey(req.headers, config.upstream.apiKey);
+        const category = getMemoryCategory(req.headers);
         const streaming = parsed.stream === true;
+
+        // Snapshot the session's last-activity timestamp BEFORE inserting
+        // the incoming user turn below, so it reflects genuine elapsed
+        // downtime rather than the turn that just arrived (see
+        // selector.js _buildDowntimeNote / history.js getLastTurnTimestamp).
+        const lastActivityAt = history.getLastTurnTimestamp(sessionKey);
 
         // 1. Persist user turn synchronously.
         // Content may be a string OR an array of OpenAI content-parts
@@ -293,7 +304,7 @@ async function start(config = loadConfig()) {
         if (userText && history.lastUserTurnContent(sessionKey) !== userText) {
           const vec = await embedder.embed(userText).catch(() => null);
           const est = Math.ceil(userText.length / config.context.charsPerToken);
-          history.insertTurn(sessionKey, 'user', userText, vec, est, embedder.model);
+          history.insertTurn(sessionKey, 'user', userText, vec, est, embedder.model, category);
         }
 
         // 2. Scene-guided context selection.
@@ -303,7 +314,10 @@ async function start(config = loadConfig()) {
           const budgetCeiling = upCtx
             ? Math.max(2048, Math.floor(upCtx * 0.85) - (parsed.max_tokens ?? 600))
             : undefined;
-          selectedMessages = await selector.select(sessionKey, parsed.messages, { budgetCeiling });
+          selectedMessages = await selector.select(sessionKey, parsed.messages, {
+            budgetCeiling,
+            lastActivityAt,
+          });
         } catch (err) {
           log.error('selector error, falling back to original messages:', err.message);
         }
@@ -359,7 +373,7 @@ async function start(config = loadConfig()) {
           // Only store if there's real content — guards against storing null/'[]'/
           // tool-call residue or partial chunks from dropped connections.
           if (strippedContent && strippedContent.trim().length >= 4) {
-            recordAssistantTurn(sessionKey, strippedContent);
+            recordAssistantTurn(sessionKey, strippedContent, category);
           }
           return;
         }
@@ -393,7 +407,7 @@ async function start(config = loadConfig()) {
         res.writeHead(upRes.status, outHeaders);
         res.end(clientBody);
 
-        if (storedContent) recordAssistantTurn(sessionKey, storedContent);
+        if (storedContent) recordAssistantTurn(sessionKey, storedContent, category);
         return;
       }
 

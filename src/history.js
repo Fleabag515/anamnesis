@@ -47,6 +47,7 @@ class HistoryStore {
         recall_count      INTEGER NOT NULL DEFAULT 0,
         importance        REAL    NOT NULL DEFAULT 0.5,
         extracted         INTEGER NOT NULL DEFAULT 0,
+        category          TEXT    NOT NULL DEFAULT 'fleagle',
         created_at        INTEGER NOT NULL DEFAULT (unixepoch())
       );
 
@@ -195,27 +196,38 @@ class HistoryStore {
       this.db.exec('ALTER TABLE foresights ADD COLUMN embedding BLOB');
     if (!has('foresights', 'embedding_model'))
       this.db.exec('ALTER TABLE foresights ADD COLUMN embedding_model TEXT');
+
+    // turns.category — added for category-partitioned memory quotas (see
+    // selector.js _fillBudget). Default 'fleagle' means every pre-existing
+    // turn (and every turn from a caller that never sends the category
+    // header) is treated as owner-authored content, which is the safe
+    // default: nothing gets silently deprioritized just because this
+    // shipped. Only a caller that explicitly tags requests (e.g. an
+    // autonomous/background task) as a different category gets partitioned
+    // away from the guaranteed floor.
+    if (!has('turns', 'category'))
+      this.db.exec("ALTER TABLE turns ADD COLUMN category TEXT NOT NULL DEFAULT 'fleagle'");
   }
 
   // ─── Turns ────────────────────────────────────────────────────────────────
 
-  insertTurn(sessionKey, role, content, embedding, tokenEst, embeddingModel = null) {
+  insertTurn(sessionKey, role, content, embedding, tokenEst, embeddingModel = null, category = 'fleagle') {
     const blob = embedding ? Buffer.from(embedding.buffer) : null;
     return this.db
       .prepare(
         `
-      INSERT INTO turns (session_key, role, content, embedding, token_est, embedding_model)
-      VALUES (?, ?, ?, ?, ?, ?)
+      INSERT INTO turns (session_key, role, content, embedding, token_est, embedding_model, category)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
     `
       )
-      .run(sessionKey, role, content, blob, tokenEst, embeddingModel).lastInsertRowid;
+      .run(sessionKey, role, content, blob, tokenEst, embeddingModel, category || 'fleagle').lastInsertRowid;
   }
 
   getSessionTurns(sessionKey) {
     return this.db
       .prepare(
         `
-      SELECT id, role, content, embedding, embedding_model, token_est, recall_count, importance, created_at
+      SELECT id, role, content, embedding, embedding_model, token_est, recall_count, importance, category, created_at
       FROM turns WHERE session_key=? ORDER BY created_at ASC, id ASC
     `
       )
@@ -422,7 +434,7 @@ class HistoryStore {
     if (!ids.length) return [];
     const ph = ids.map(() => '?').join(',');
     return this.db
-      .prepare(`SELECT id, role, content, token_est FROM turns WHERE id IN (${ph})`)
+      .prepare(`SELECT id, role, content, token_est, category FROM turns WHERE id IN (${ph})`)
       .all(...ids);
   }
 
@@ -508,6 +520,23 @@ class HistoryStore {
       )
       .get(sessionKey);
     return row ? row.content : null;
+  }
+
+  /**
+   * Unix-seconds timestamp of the most recent turn in this session (any
+   * role), or null if the session has no history yet. Callers (proxy.js)
+   * read this BEFORE inserting the new incoming user turn, so it reflects
+   * genuine elapsed downtime rather than the turn that just arrived — the
+   * selector uses the gap to decide whether to inject a downtime-awareness
+   * note (see selector.js _buildDowntimeNote).
+   */
+  getLastTurnTimestamp(sessionKey) {
+    const row = this.db
+      .prepare(
+        `SELECT created_at FROM turns WHERE session_key=? ORDER BY created_at DESC, id DESC LIMIT 1`
+      )
+      .get(sessionKey);
+    return row ? row.created_at : null;
   }
 
   /** All session buckets in this store, busiest first. */
