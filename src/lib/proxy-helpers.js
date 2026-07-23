@@ -38,6 +38,33 @@ function extractContentText(content) {
 }
 
 /**
+ * Find "the new user turn" in an incoming chat-completion request's
+ * `messages` array, the same way the proxy's persistence/dedup logic does:
+ * reverse-scan for the first role==='user' entry.
+ *
+ * Why reverse-scan instead of just the last array entry: an agentic
+ * tool-calling client (Pleiades) resends the whole growing array once per
+ * tool round-trip within one turn, so the literal last entry during those
+ * rounds is an assistant tool_calls message or a role:"tool" result, not
+ * the user's actual message. This deliberately extends to SYNTHETIC tool
+ * rounds too — e.g. Pleiades' engine.py periodically fabricates an
+ * assistant tool_calls message + a role:"tool" result to deliver an
+ * internal notice (a self-reflection check, a background-task-completion
+ * notice) mid-turn, specifically so it does NOT read as user speech (see
+ * fix/anamnesis-reflection-injection on the Pleiades side). Filtering on
+ * role==='user' here is what makes that safe: neither a real nor a
+ * synthetic tool round is ever mistaken for "the new user turn", no matter
+ * how recently it was appended.
+ *
+ * Returns the message object itself (not just its text — callers that need
+ * the text still run it through extractContentText), or undefined if
+ * `messages` has no role==='user' entry at all.
+ */
+function findNewUserMessage(messages) {
+  return [...messages].reverse().find((m) => m.role === 'user');
+}
+
+/**
  * Recursively expand `~`, `${HOME}` and `$HOME` in string values inside a
  * (possibly nested) config object. Lets config.json ship a portable default
  * like `~/.anamnesis/history.db` instead of a machine-specific absolute path.
@@ -339,6 +366,7 @@ module.exports = {
   makeStreamingThinkingFilter,
   expandHome,
   extractContentText,
+  findNewUserMessage,
   getSessionKey,
   getMemoryCategory,
   formatDuration,

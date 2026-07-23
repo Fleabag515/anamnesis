@@ -35,7 +35,7 @@
 
 const HistoryStore = require('./history.js');
 const Embedder = require('./embedder.js');
-const { extractContentText, stripThinkingTokens, formatDuration } = require('./lib/proxy-helpers.js');
+const { extractContentText, findNewUserMessage, stripThinkingTokens, formatDuration } = require('./lib/proxy-helpers.js');
 const log = require('./lib/logger.js').make('selector');
 
 // Defaults — every one of these is overridable via config.context.*
@@ -159,8 +159,13 @@ class Selector {
     // 35B model (see Pleiades' native-inference-engine design doc, Phase 6).
     // Falls back to the literal last message only if no user-role message
     // exists at all (shouldn't happen for Pleiades' calling convention, but
-    // keeps this from ever throwing on an unusual caller).
-    const lastUserMsg = [...convoMsgs].reverse().find((m) => m.role === 'user');
+    // keeps this from ever throwing on an unusual caller). Shares its
+    // role==='user' reverse-scan with the proxy's own persistence dedup
+    // (see findNewUserMessage's docstring) so a synthetic tool round (e.g.
+    // Pleiades' self-reflection check) is uniformly invisible to both --
+    // it never becomes the retrieval anchor here any more than it becomes
+    // "the new user turn" there.
+    const lastUserMsg = findNewUserMessage(convoMsgs);
     const currentMsg = lastUserMsg ?? convoMsgs[convoMsgs.length - 1];
     // Normalise possibly-array content (OpenAI multipart) into plain text
     // so the embedding sees the same string that gets stored as the turn.

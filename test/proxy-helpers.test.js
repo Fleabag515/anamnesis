@@ -4,6 +4,7 @@ const assert = require('node:assert/strict');
 const {
   expandHome,
   extractContentText,
+  findNewUserMessage,
   getSessionKey,
   getMemoryCategory,
   formatDuration,
@@ -49,6 +50,113 @@ test('extractContentText: object → JSON', () => {
 test('extractContentText: null/undefined → empty string', () => {
   assert.equal(extractContentText(null), '');
   assert.equal(extractContentText(undefined), '');
+});
+
+// ─── findNewUserMessage ─────────────────────────────────────────────────────
+// This is the core claim fix/anamnesis-reflection-injection rests on: the
+// proxy persists "the new user turn" by reverse-scanning `messages` for the
+// first role==='user' entry (see findNewUserMessage's docstring and its one
+// call site in proxy.js). A machine-generated notice delivered as a
+// SYNTHETIC TOOL ROUND — a fabricated assistant tool_calls message the
+// model never actually emitted, immediately followed by a role:"tool"
+// result carrying the real notice text (Pleiades engine.py's periodic
+// self-check, or any future "background task finished" notice) — must
+// never be mistaken for that new user turn, no matter where in the array
+// it sits. These tests build exactly that shape by hand (synthetic data
+// only, no real character content) and assert on it directly, rather than
+// just reasoning about the reverse-scan.
+
+test('findNewUserMessage: finds the only user message', () => {
+  const messages = [
+    { role: 'system', content: 'sys' },
+    { role: 'user', content: 'hello' },
+  ];
+  assert.equal(findNewUserMessage(messages).content, 'hello');
+});
+
+test('findNewUserMessage: an agentic resend with real tool_calls/tool pairs still finds the real user message', () => {
+  // Shape of a normal (non-synthetic) tool round-trip: assistant calls a
+  // REAL tool, gets a REAL result. The literal last message is role:"tool",
+  // not role:"user" -- must not be picked up as the new user turn.
+  const messages = [
+    { role: 'system', content: 'sys' },
+    { role: 'user', content: 'what files are in this repo?' },
+    {
+      role: 'assistant', content: '',
+      tool_calls: [{ id: 'call_1', type: 'function',
+                    function: { name: 'list_files', arguments: '{}' } }],
+    },
+    { role: 'tool', tool_call_id: 'call_1', content: 'a.txt\nb.txt' },
+  ];
+  const found = findNewUserMessage(messages);
+  assert.equal(found.content, 'what files are in this repo?');
+});
+
+test('findNewUserMessage: a SYNTHETIC tool round (fabricated assistant tool_calls + its role:"tool" result) is invisible to the scan even as the last entries in the array', () => {
+  // Exactly the shape fix/anamnesis-reflection-injection produces: the
+  // model never emitted this tool_calls entry -- it's fabricated by the
+  // caller (Pleiades' engine.py / harness/agent.py) to deliver an internal
+  // notice through a channel that is provably NOT "the new user turn".
+  const messages = [
+    { role: 'system', content: 'sys' },
+    { role: 'user', content: 'help me refactor this function' },
+    {
+      role: 'assistant', content: '',
+      tool_calls: [{ id: 'call_1', type: 'function',
+                    function: { name: 'read_file', arguments: '{"path":"a.py"}' } }],
+    },
+    { role: 'tool', tool_call_id: 'call_1', content: 'def f(): ...' },
+    // Synthetic self-reflection round -- the model never called this tool.
+    {
+      role: 'assistant', content: '',
+      tool_calls: [{ id: 'reflect_40', type: 'function',
+                    function: { name: 'system_reflection', arguments: '{}' } }],
+    },
+    {
+      role: 'tool', tool_call_id: 'reflect_40',
+      content: '[Self-check after 40 steps] Before continuing, genuinely evaluate...',
+    },
+  ];
+
+  const found = findNewUserMessage(messages);
+  assert.ok(found, 'expected a role==user message to be found');
+  assert.equal(found.role, 'user');
+  assert.equal(found.content, 'help me refactor this function');
+  // Directly disprove the bug: the found message must never be (or resolve
+  // to, via the exact same extractContentText step proxy.js runs next) the
+  // fabricated notice text.
+  assert.notEqual(extractContentText(found.content), '[Self-check after 40 steps] Before continuing, genuinely evaluate...');
+  assert.equal(extractContentText(found.content), 'help me refactor this function');
+});
+
+test('findNewUserMessage: a synthetic tool round with NO real user message anywhere finds nothing (never falls back to tool content)', () => {
+  // Degenerate case, for robustness: if a request somehow carried only a
+  // synthetic notice and no real user turn, the scan must return undefined
+  // rather than ever treating tool content as user speech.
+  const messages = [
+    { role: 'system', content: 'sys' },
+    {
+      role: 'assistant', content: '',
+      tool_calls: [{ id: 'reflect_1', type: 'function',
+                    function: { name: 'system_reflection', arguments: '{}' } }],
+    },
+    { role: 'tool', tool_call_id: 'reflect_1', content: '[Self-check after 40 steps] ...' },
+  ];
+  const found = findNewUserMessage(messages);
+  assert.equal(found, undefined);
+  // proxy.js's actual guard (`if (userText && ...)`) would then correctly
+  // skip persistence entirely -- confirm the text side is also empty, not
+  // some stringified fallback that would sneak the tool content in anyway.
+  assert.equal(extractContentText(found?.content), '');
+});
+
+test('findNewUserMessage: multiple real user turns in one resent array (agentic re-send) resolves to the LAST one, not the first', () => {
+  const messages = [
+    { role: 'user', content: 'first question' },
+    { role: 'assistant', content: 'reply' },
+    { role: 'user', content: 'second question, same array' },
+  ];
+  assert.equal(findNewUserMessage(messages).content, 'second question, same array');
 });
 
 // ─── expandHome ─────────────────────────────────────────────────────────────

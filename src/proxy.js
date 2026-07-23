@@ -31,6 +31,7 @@ const fs = require('fs');
 const {
   expandHome,
   extractContentText,
+  findNewUserMessage,
   getSessionKey,
   getMemoryCategory,
   buildUpstreamHeaders,
@@ -295,7 +296,7 @@ async function start(config = loadConfig()) {
         // (text + tool_result + image_url etc). Flatten before storage —
         // better-sqlite3 only binds primitives, and the selector needs a
         // string to embed.
-        const userMsg = [...parsed.messages].reverse().find((m) => m.role === 'user');
+        const userMsg = findNewUserMessage(parsed.messages);
         const userText = extractContentText(userMsg?.content);
         // Agentic clients re-send the same growing messages array once per
         // tool round-trip, so the same user turn used to be stored N+1 times
