@@ -145,7 +145,23 @@ class Selector {
 
     const systemMsgs = incoming.filter((m) => m.role === 'system');
     const convoMsgs = incoming.filter((m) => m.role !== 'system');
-    const currentMsg = convoMsgs[convoMsgs.length - 1];
+    // Anchor retrieval to the last REAL user message, not just the literal
+    // last array entry. For an agentic tool-calling client (Pleiades), one
+    // user turn resends the whole growing array once per tool round-trip,
+    // and the literal last message during those rounds is a tool result or
+    // an assistant tool_call, not the user's actual question. Embedding that
+    // as the query (a) drifts retrieval away from what the user is actually
+    // asking about (a shell command's stdout, an email body, etc. is not a
+    // meaningful memory query) and (b) recomputes a DIFFERENT <memory>/
+    // rotating-slot selection on every single round, which defeats
+    // llama-server's longest-common-prefix KV-cache reuse for the rest of
+    // that turn -- measured as real 20-30s+ stalls between tool rounds on a
+    // 35B model (see Pleiades' native-inference-engine design doc, Phase 6).
+    // Falls back to the literal last message only if no user-role message
+    // exists at all (shouldn't happen for Pleiades' calling convention, but
+    // keeps this from ever throwing on an unusual caller).
+    const lastUserMsg = [...convoMsgs].reverse().find((m) => m.role === 'user');
+    const currentMsg = lastUserMsg ?? convoMsgs[convoMsgs.length - 1];
     // Normalise possibly-array content (OpenAI multipart) into plain text
     // so the embedding sees the same string that gets stored as the turn.
     const queryText = extractContentText(currentMsg?.content);

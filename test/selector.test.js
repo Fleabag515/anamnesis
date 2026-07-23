@@ -80,6 +80,41 @@ test('select() still includes the user message for a normal short turn (no regre
   assert.ok(result.some((m) => m.role === 'user'));
 });
 
+test('select() anchors the retrieval query to the last REAL user message, not a tool result, across every round of one agentic turn', async () => {
+  const embeddedTexts = [];
+  const spyEmbedder = {
+    model: 'test-model',
+    embed: async (text) => {
+      embeddedTexts.push(text);
+      return new Float32Array([0.1, 0.2]);
+    },
+  };
+  const selector = new Selector(makeConfig(), makeMockHistory(), spyEmbedder, null);
+
+  // Simulate Pleiades' engine.py resending the growing messages array once
+  // per tool round -- same request each time except more (assistant, tool)
+  // pairs appended at the tail. The literal last message is a tool result
+  // in every round after the first.
+  for (let round = 0; round < 4; round++) {
+    const incoming = buildLongToolLoopTurn(round);
+    await selector.select('session-2', incoming);
+  }
+
+  // Every round's embed() call for the query vector must have used the
+  // ORIGINAL user message text, never a "tool result N" string -- otherwise
+  // the <memory>/rotating-slot selection recomputes differently each round
+  // (defeating KV-cache reuse) and retrieval drifts onto irrelevant tool
+  // output instead of the user's actual request.
+  assert.ok(embeddedTexts.length > 0, 'expected at least one embed() call');
+  for (const t of embeddedTexts) {
+    assert.equal(
+      t,
+      'go log into instagram for me',
+      `expected every round to embed the original user message, got: ${JSON.stringify(t)}`
+    );
+  }
+});
+
 // ─── downtime-awareness ──────────────────────────────────────────────────────
 
 function makeConfigWithDowntime(overrides = {}) {
