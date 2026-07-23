@@ -38,6 +38,7 @@ const {
   makeSseAccumulator,
   stripThinkingTokens,
   makeStreamingThinkingFilter,
+  resolveTaskActivitySnapshot,
 } = require('./lib/proxy-helpers.js');
 const log = require('./lib/logger.js').make('anamnesis');
 
@@ -58,6 +59,23 @@ async function start(config = loadConfig()) {
   brain.init(config); // start model download/load in background; chat() calls queue until ready
 
   const history = new HistoryStore(config.history.dbPath);
+  // Task-level snapshot of "time since last activity" (fix 2026-07-23): this used
+  // to be recomputed fresh via history.getLastTurnTimestamp() on EVERY request,
+  // including every tool-call round-trip resend within one agentic task. Since
+  // recordAssistantTurn() persists each assistant reply asynchronously right after
+  // it streams, by the very next tool round the "last turn" was the reply from a
+  // few seconds ago, not genuine downtime -- so _buildDowntimeNote's <continuity>
+  // block (selector.js) would appear on round 1 and vanish (or change) by round 2,
+  // shifting the system prompt and defeating llama-server's context-checkpoint
+  // reuse for recurrent/hybrid models exactly once per task (measured live on
+  // Mark/Ornith: round 1->2 common-prefix collapsed to <40% and forced a full
+  // ~20s reprocess; every round after that, once the prompt stabilized, restored
+  // cleanly). Anchoring this snapshot to the start of each genuinely NEW user turn
+  // (keyed by sessionKey, refreshed only when the incoming message is new -- same
+  // dedup signal already used below to avoid double-storing the user turn) keeps
+  // the downtime note's content -- and therefore the prompt prefix -- stable for
+  // every round of one task, changing only when the user actually sends a new one.
+  const _taskActivitySnapshot = new Map(); // sessionKey -> lastActivityAt (number|null)
   const persona = new PersonaManager(config, history);
   await persona.init();
   const selector = new Selector(config, history, embedder, persona);
@@ -285,13 +303,7 @@ async function start(config = loadConfig()) {
         const category = getMemoryCategory(req.headers);
         const streaming = parsed.stream === true;
 
-        // Snapshot the session's last-activity timestamp BEFORE inserting
-        // the incoming user turn below, so it reflects genuine elapsed
-        // downtime rather than the turn that just arrived (see
-        // selector.js _buildDowntimeNote / history.js getLastTurnTimestamp).
-        const lastActivityAt = history.getLastTurnTimestamp(sessionKey);
-
-        // 1. Persist user turn synchronously.
+        // 1. Persist user turn synchronously (only when genuinely new — see below).
         // Content may be a string OR an array of OpenAI content-parts
         // (text + tool_result + image_url etc). Flatten before storage —
         // better-sqlite3 only binds primitives, and the selector needs a
@@ -302,7 +314,27 @@ async function start(config = loadConfig()) {
         // tool round-trip, so the same user turn used to be stored N+1 times
         // for a turn with N tool calls — duplicate embeddings, skewed
         // retrieval, wasted extraction. Store only when it's actually new.
-        if (userText && history.lastUserTurnContent(sessionKey) !== userText) {
+        const isNewUserTurn = !!(userText && history.lastUserTurnContent(sessionKey) !== userText);
+
+        // Snapshot the session's last-activity timestamp BEFORE inserting the
+        // incoming user turn below, so it reflects genuine elapsed downtime
+        // rather than the turn that just arrived (see selector.js
+        // _buildDowntimeNote / history.js getLastTurnTimestamp). Only
+        // recomputed on a genuinely NEW user turn — every tool-call
+        // round-trip resend within the same task reuses the snapshot taken
+        // when the task started, so the <continuity> block this feeds stays
+        // byte-stable across a whole task instead of flipping mid-task (see
+        // the _taskActivitySnapshot comment near HistoryStore's construction
+        // for why that matters — measured live to break context-checkpoint
+        // reuse on Mark/Ornith otherwise).
+        const lastActivityAt = resolveTaskActivitySnapshot(
+          isNewUserTurn,
+          sessionKey,
+          _taskActivitySnapshot,
+          () => history.getLastTurnTimestamp(sessionKey)
+        );
+
+        if (isNewUserTurn) {
           const vec = await embedder.embed(userText).catch(() => null);
           const est = Math.ceil(userText.length / config.context.charsPerToken);
           history.insertTurn(sessionKey, 'user', userText, vec, est, embedder.model, category);

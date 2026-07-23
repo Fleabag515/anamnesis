@@ -362,6 +362,48 @@ function makeStreamingThinkingFilter(clientRes) {
   };
 }
 
+/**
+ * Decide the "last activity" timestamp fed to selector.js's downtime/
+ * continuity note for one request, given a per-session snapshot cache.
+ *
+ * Fix 2026-07-23: recomputing this fresh on every request (including every
+ * tool-call round-trip resend within one agentic task) let it flip mid-task
+ * — the assistant's own reply from round 1 gets persisted as "the last turn"
+ * before round 2's request arrives, changing or erasing the continuity note
+ * and shifting the system prompt enough to defeat llama-server's context-
+ * checkpoint reuse for recurrent/hybrid models (measured live on Mark/
+ * Ornith: round 1->2 common-prefix collapsed to <40% and forced a full ~20s
+ * reprocess that a stable prefix would have avoided). Anchoring the
+ * snapshot to the start of each genuinely NEW user turn keeps it — and the
+ * prompt prefix it feeds — byte-stable for every round of one task.
+ *
+ * @param {boolean} isNewUserTurn - true only when this request's message is
+ *   a genuinely new user turn (not a tool-call round-trip resend of one
+ *   already stored — see findNewUserMessage's dedup usage in proxy.js).
+ * @param {string} sessionKey
+ * @param {Map<string, number|null>} snapshotMap - mutated in place; caller
+ *   owns its lifetime (one per proxy process, keyed by session).
+ * @param {() => (number|null)} readFreshTimestamp - lazily reads a fresh
+ *   "last turn" timestamp (e.g. history.getLastTurnTimestamp(sessionKey)).
+ *   Only invoked when a fresh read is actually needed.
+ * @returns {number|null}
+ */
+function resolveTaskActivitySnapshot(isNewUserTurn, sessionKey, snapshotMap, readFreshTimestamp) {
+  if (isNewUserTurn) {
+    const fresh = readFreshTimestamp();
+    snapshotMap.set(sessionKey, fresh);
+    return fresh;
+  }
+  if (snapshotMap.has(sessionKey)) {
+    return snapshotMap.get(sessionKey);
+  }
+  // First time we've seen this session in this proxy process (e.g. right
+  // after a daemon restart mid-task) — fall back to a fresh read rather
+  // than crashing; only degrades to the old per-request behavior for that
+  // one edge case.
+  return readFreshTimestamp();
+}
+
 module.exports = {
   makeStreamingThinkingFilter,
   expandHome,
@@ -373,4 +415,5 @@ module.exports = {
   buildUpstreamHeaders,
   makeSseAccumulator,
   stripThinkingTokens,
+  resolveTaskActivitySnapshot,
 };

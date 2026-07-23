@@ -10,6 +10,7 @@ const {
   formatDuration,
   buildUpstreamHeaders,
   makeSseAccumulator,
+  resolveTaskActivitySnapshot,
 } = require('../src/lib/proxy-helpers.js');
 
 // ─── extractContentText ─────────────────────────────────────────────────────
@@ -466,4 +467,86 @@ test('formatDuration: days and hours', () => {
 test('formatDuration: negative/zero clamps to 0m', () => {
   assert.equal(formatDuration(-5), '0m');
   assert.equal(formatDuration(0), '0m');
+});
+
+
+// ─── resolveTaskActivitySnapshot ─────────────────────────────────────────────
+// Fix 2026-07-23: keeps the downtime/continuity note's basis timestamp stable
+// across every tool-call round-trip resend within one agentic task, instead of
+// flipping when the assistant's own reply from round 1 gets recorded as "the
+// last turn" before round 2 arrives (which broke llama-server's context-
+// checkpoint reuse for recurrent/hybrid models — see the function's own
+// docstring / proxy.js for the full story).
+
+test('resolveTaskActivitySnapshot: a new user turn reads fresh and caches it', () => {
+  const snapshotMap = new Map();
+  let reads = 0;
+  const readFresh = () => { reads += 1; return 12345; };
+
+  const result = resolveTaskActivitySnapshot(true, 'sess-a', snapshotMap, readFresh);
+
+  assert.equal(result, 12345);
+  assert.equal(reads, 1);
+  assert.equal(snapshotMap.get('sess-a'), 12345);
+});
+
+test('resolveTaskActivitySnapshot: a tool-call round-trip resend reuses the cached snapshot without a fresh read', () => {
+  const snapshotMap = new Map([['sess-a', 12345]]);
+  let reads = 0;
+  const readFresh = () => { reads += 1; return 99999; }; // would be wrong if used
+
+  const result = resolveTaskActivitySnapshot(false, 'sess-a', snapshotMap, readFresh);
+
+  assert.equal(result, 12345);
+  assert.equal(reads, 0, 'must not call readFreshTimestamp on a cached hit');
+});
+
+test('resolveTaskActivitySnapshot: a resend for a session never seen this process falls back to a fresh read', () => {
+  const snapshotMap = new Map();
+  let reads = 0;
+  const readFresh = () => { reads += 1; return 42; };
+
+  const result = resolveTaskActivitySnapshot(false, 'sess-new', snapshotMap, readFresh);
+
+  assert.equal(result, 42);
+  assert.equal(reads, 1);
+  // Does not backfill the map -- only a genuinely new user turn should own
+  // that write, so a second resend for the same never-seen session falls
+  // back to a fresh read again rather than silently caching a guess.
+  assert.equal(snapshotMap.has('sess-new'), false);
+});
+
+test('resolveTaskActivitySnapshot: null (brand-new session, no prior turns) is cached and reused just like a real timestamp', () => {
+  const snapshotMap = new Map();
+  const readFresh = () => null;
+
+  const first = resolveTaskActivitySnapshot(true, 'sess-b', snapshotMap, readFresh);
+  const second = resolveTaskActivitySnapshot(false, 'sess-b', snapshotMap, readFresh);
+
+  assert.equal(first, null);
+  assert.equal(second, null);
+  assert.equal(snapshotMap.has('sess-b'), true, 'null must still be cached, not treated as "no entry"');
+});
+
+test('resolveTaskActivitySnapshot: a later new user turn refreshes the snapshot (does not stick forever)', () => {
+  const snapshotMap = new Map();
+  const timestamps = [100, 200];
+  const readFresh = () => timestamps.shift();
+
+  const turn1 = resolveTaskActivitySnapshot(true, 'sess-c', snapshotMap, readFresh);
+  const midTaskResend = resolveTaskActivitySnapshot(false, 'sess-c', snapshotMap, readFresh);
+  const turn2 = resolveTaskActivitySnapshot(true, 'sess-c', snapshotMap, readFresh);
+
+  assert.equal(turn1, 100);
+  assert.equal(midTaskResend, 100, 'stays pinned to turn 1s snapshot for the whole task');
+  assert.equal(turn2, 200, 'a genuinely new user turn is free to move the snapshot forward');
+});
+
+test('resolveTaskActivitySnapshot: independent sessions do not clobber each other', () => {
+  const snapshotMap = new Map();
+  resolveTaskActivitySnapshot(true, 'sess-x', snapshotMap, () => 111);
+  resolveTaskActivitySnapshot(true, 'sess-y', snapshotMap, () => 222);
+
+  assert.equal(resolveTaskActivitySnapshot(false, 'sess-x', snapshotMap, () => { throw new Error('must not be called'); }), 111);
+  assert.equal(resolveTaskActivitySnapshot(false, 'sess-y', snapshotMap, () => { throw new Error('must not be called'); }), 222);
 });
