@@ -268,3 +268,90 @@ test('_fillBudget: a category with no configured quota is treated as ordinary sl
   const out = selector._fillBudget(ranked, 5, 10000, 4, 40);
   assert.equal(out.length, 2);
 });
+
+// ─── vision content-parts arrays (Pleiades vision-routing, 2026-07-23) ──────
+// engine.py sends the current turn's `content` as an OpenAI content-parts
+// array (text + image_url) once a character's assigned model is vision-
+// capable. Two things must hold: (1) the array survives select() completely
+// unmangled so the image actually reaches the upstream model, and (2) the
+// token-budget math must not silently under-count it (see _estOne's
+// docstring in src/selector.js for the bug this used to be).
+
+function makeImageMessage(text, dataUrl = 'data:image/png;base64,AAAAAAAAAAAAAAAAAAAA') {
+  return {
+    role: 'user',
+    content: [
+      { type: 'text', text },
+      { type: 'image_url', image_url: { url: dataUrl } },
+    ],
+  };
+}
+
+test('select() passes an OpenAI content-parts (image_url) array through completely unmangled', async () => {
+  const selector = new Selector(makeConfig(), makeMockHistory(), makeMockEmbedder(), null);
+  const incoming = [
+    { role: 'system', content: 'You are Mark.' },
+    { role: 'user', content: 'earlier turn, plain text' },
+    { role: 'assistant', content: 'ok' },
+    makeImageMessage('what is in this image?', 'data:image/png;base64,SGVsbG8='),
+  ];
+  const result = await selector.select('session-vision-1', incoming);
+  const last = result[result.length - 1];
+  assert.ok(Array.isArray(last.content), 'expected the vision message content to still be an array');
+  assert.equal(last.content.length, 2);
+  assert.equal(last.content[0].type, 'text');
+  assert.equal(last.content[0].text, 'what is in this image?');
+  assert.equal(last.content[1].type, 'image_url');
+  assert.equal(last.content[1].image_url.url, 'data:image/png;base64,SGVsbG8=');
+});
+
+test('select() does not crash and still anchors retrieval sensibly when the newest message is an image', async () => {
+  const embeddedTexts = [];
+  const spyEmbedder = {
+    model: 'test-model',
+    embed: async (text) => {
+      embeddedTexts.push(text);
+      return new Float32Array([0.1, 0.2]);
+    },
+  };
+  const selector = new Selector(makeConfig(), makeMockHistory(), spyEmbedder, null);
+  const incoming = [
+    { role: 'system', content: 'You are Mark.' },
+    makeImageMessage('describe this logo'),
+  ];
+  await selector.select('session-vision-2', incoming);
+  // The query embedding must see the TEXT part only, never raw base64/JSON
+  // noise from the image_url part (extractContentText already guarantees
+  // this -- asserting it here pins the behavior at the selector-integration
+  // level, not just proxy-helpers' own unit tests).
+  assert.ok(embeddedTexts.length > 0);
+  for (const t of embeddedTexts) {
+    assert.equal(t, 'describe this logo');
+  }
+});
+
+test('_estOne: a content-parts array with an image is costed far above the ~1-token undercount the old `.length` gave it', () => {
+  const selector = new Selector(makeConfig(), makeMockHistory(), makeMockEmbedder(), null);
+  const content = [
+    { type: 'text', text: 'what is in this image?' },
+    { type: 'image_url', image_url: { url: 'data:image/png;base64,' + 'A'.repeat(200000) } },
+  ];
+  const cpt = 4;
+  const cost = selector._estOne(content, cpt);
+  // Old behavior: Math.ceil(content.length / cpt) === Math.ceil(2 / 4) === 1.
+  assert.ok(cost > 100, `expected a substantial per-image token estimate, got ${cost}`);
+});
+
+test('_estOne: plain string content is unaffected (byte-for-byte same as before)', () => {
+  const selector = new Selector(makeConfig(), makeMockHistory(), makeMockEmbedder(), null);
+  assert.equal(selector._estOne('hello world', 4), Math.ceil('hello world'.length / 4));
+  assert.equal(selector._estOne('', 4), 0);
+  assert.equal(selector._estOne(undefined, 4), 0);
+});
+
+test('_estOne: text-only content-parts array (no image) costs by real character length, not element count', () => {
+  const selector = new Selector(makeConfig(), makeMockHistory(), makeMockEmbedder(), null);
+  const content = [{ type: 'text', text: 'x'.repeat(400) }];
+  const cost = selector._estOne(content, 4);
+  assert.equal(cost, Math.ceil(400 / 4));
+});

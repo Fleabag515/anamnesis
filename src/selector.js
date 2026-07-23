@@ -50,6 +50,7 @@ const FORESIGHT_MIN_SIM = 0.22; // min relevance for a foresight to inject
 const FORESIGHT_MAX = 3; // max foresights injected
 const DOWNTIME_MIN_GAP_MINUTES = 30; // below this gap, no continuity note (normal back-and-forth)
 const CATEGORY_QUOTAS_DEFAULT = { fleagle: 0.3 }; // guaranteed floor share of rotating budget
+const IMAGE_TOKEN_ESTIMATE = 600; // flat per-image budget cost -- see _estOne()
 // Days before an unfulfilled foresight stops being injected, per timeframe.
 // Single source of truth lives on HistoryStore (the consolidator's expiry
 // pass uses the same map).
@@ -657,7 +658,54 @@ class Selector {
   }
 
   _est(msgs, cpt) {
-    return msgs.reduce((s, m) => s + Math.ceil((m.content?.length ?? 0) / cpt), 0);
+    return msgs.reduce((s, m) => s + this._estOne(m.content, cpt), 0);
+  }
+
+  /**
+   * Token-cost estimate for ONE message's content, used by the budget math
+   * in select() (systemTokens/recencyTokens -> how much room is left for
+   * rotating memory slots).
+   *
+   * Bug this fixes (found 2026-07-23 auditing vision-routing support, see
+   * Pleiades' docs/specs/2026-07-23-vision-routing-design.md step 4a): a
+   * vision-capable client (Pleiades' engine.py, once a character's assigned
+   * model can take image input) sends the current turn's `content` as an
+   * OpenAI content-parts ARRAY, e.g.
+   *   [{type:'text', text:'...'}, {type:'image_url', image_url:{url:'data:
+   *   image/png;base64,<huge>'}}]
+   * The old `m.content?.length` blindly used JS's `.length` regardless of
+   * type. For a string that's the char count (correct); for an ARRAY,
+   * `.length` is the number of array ELEMENTS (typically 1-3) -- a message
+   * carrying a full image was silently costed at ~1 estimated token instead
+   * of the real, substantial cost an image actually represents. That let
+   * select() believe far more budget was free than truly was, over-filling
+   * rotating-memory slots and risking the assembled request overflowing the
+   * upstream server's real n_ctx once the image's actual token cost lands
+   * server-side -- exactly the kind of silent breakage this project's
+   * vision-routing work was told to explicitly verify for, not assume away.
+   *
+   * Does NOT crash either way (JS never throws on `.length` for an array),
+   * which is also worth recording: the failure mode here was silent
+   * misestimation, not an exception.
+   */
+  _estOne(content, cpt) {
+    if (typeof content === 'string') return Math.ceil(content.length / cpt);
+    if (Array.isArray(content)) {
+      let chars = 0;
+      let imageParts = 0;
+      for (const part of content) {
+        if (part && typeof part.text === 'string') chars += part.text.length;
+        else if (part?.type === 'image_url' || part?.image_url) imageParts += 1;
+      }
+      // No exact way to know an image's real post-encoder token cost from
+      // here (varies by tiling/resolution/model) -- IMAGE_TOKEN_ESTIMATE is
+      // a conservative flat per-image guess (roughly a single-tile budget
+      // for common small vision encoders). Costing a little rotating-memory
+      // headroom on every vision turn is a much safer failure mode than the
+      // previous ~1-token estimate, which cost none at all.
+      return Math.ceil(chars / cpt) + imageParts * IMAGE_TOKEN_ESTIMATE;
+    }
+    return 0;
   }
 }
 
